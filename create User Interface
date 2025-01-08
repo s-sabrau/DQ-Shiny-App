@@ -1,0 +1,64 @@
+################################################################################
+# create User Interface
+################################################################################
+
+ui <- fluidPage(
+  theme = shinytheme("flatly"),
+  tags$head(
+    tags$style(HTML("
+            .plot_box {
+                width: 300px;
+                padding: 15px;
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                box-shadow: 0px 2px 5px rgba(0, 0, 0, 0.2);
+                margin: 10px;
+                background-color: transparent;
+                position: absolute;
+            }
+        "))
+  ),
+  navbarPage(
+    title = "DATA VISUALIZATION",
+    
+    tabPanel("JSON-Data upload",
+             sidebarLayout(
+               sidebarPanel(
+                 h4("JSON-Data upload"),
+                 fileInput("jsonFiles", "JSON-Data upload", accept = ".json", multiple = TRUE),
+                 br(),
+                 h4("DIZ Locations in Germany"),
+                 leafletOutput("map", height = "400px")
+               ),
+               mainPanel(
+                 h4("GUIDE"),
+                 p("The application provides an intuitive interface for uploading JSON files. Users can seamlessly explore and analyze their data through various visualization options, including histograms, pie charts, and line charts. The app also allows users to adjust the transparency of the charts and offers drag-and-drop functionality, enabling the free arrangement of charts on the screen for enhanced comparison and analysis. Additionally, a dedicated Statistics view summarizes the uploaded data, presenting key metrics such as the total count and the mean value for each file."),
+                 br(),
+                 h4("JSON-Datasets"),
+                 tableOutput("jsonList")
+               )
+             )
+    ),
+    
+    tabPanel("Visualization",
+             fluidRow(
+               column(12,
+                      div(
+                        id = "plot_area",
+                        style = "position: relative; height: 800px; border: 1px solid #ddd; overflow: hidden;",
+                        uiOutput("plotsUI")
+                      )
+               )
+             )
+    ),
+    
+    tabPanel("Statistics",
+             fluidRow(
+               column(12,
+                      h4("Statistics for Uploaded Data"),
+                      tableOutput("statTable")
+               )
+             )
+    )
+  )
+)
