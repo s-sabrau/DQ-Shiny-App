@@ -1,0 +1,20 @@
+###Purpose of the script:
+#to load and install all packages needed to run scripts 
+###Author(s): Sarah Braun
+###Date originally Created: 2025-01-08
+###Contact Information: sarah.braun@med.uni-greifswald.de
+#For more information, please visit: github
+
+################################################################################
+# load and install packages
+################################################################################
+#packages <- c("shiny", "jsonlite", "ggplot2", "leaflet", "shinythemes", "shinyjqui", "geodata")
+#install.packages(setdiff(packages, installed.packages()[,"Package"]))
+
+library(shiny)
+library(jsonlite)
+library(ggplot2)
+library(leaflet)
+library(shinythemes)
+library(shinyjqui)
+library(geodata)
