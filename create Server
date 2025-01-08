@@ -1,0 +1,175 @@
+################################################################################
+# create Server
+################################################################################
+
+
+server <- function(input, output, session) {
+  # Funktion zum Laden der JSON-Daten
+  loadJsonData <- function(filePath) {
+    jsonData <- fromJSON(filePath)
+    data.frame(
+      Category = jsonData$Histogram$Category$`@value`,
+      Count = as.numeric(jsonData$Histogram$Count$`@value`)
+    )
+  }
+  
+  # Alle hochgeladenen Dateien laden
+  allData <- reactive({
+    req(input$jsonFiles)
+    filePaths <- input$jsonFiles$datapath
+    fileNames <- input$jsonFiles$name
+    
+    # Liste von DataFrames mit Dateinamen
+    dataList <- lapply(seq_along(filePaths), function(i) {
+      list(
+        name = fileNames[i],
+        data = loadJsonData(filePaths[i])
+      )
+    })
+    dataList
+  })
+  
+  # Liste der hochgeladenen JSON-Dateien
+  output$jsonList <- renderTable({
+    req(input$jsonFiles)
+    data.frame(Dateien = input$jsonFiles$name)
+  })
+  
+  # Statistik der hochgeladenen Dateien
+  output$statTable <- renderTable({
+    req(allData())
+    fileList <- allData()
+    
+    statsList <- lapply(1:length(fileList), function(i) {
+      fileData <- fileList[[i]]
+      filteredData <- fileData$data
+      
+      list(
+        Datei = fileData$name,
+        Menge = nrow(filteredData),
+        Mittelwert = ifelse(nrow(filteredData) > 0, mean(filteredData$Count, na.rm = TRUE), NA)
+      )
+    })
+    
+    do.call(rbind, statsList)
+  })
+  
+  # Dynamische UI für die Plots
+  output$plotsUI <- renderUI({
+    req(allData())
+    fileList <- allData()
+    
+    tagList(
+      lapply(1:length(fileList), function(i) {
+        jqui_draggable(
+          div(
+            id = paste0("plot_box_", i),
+            class = "plot_box",
+            div(
+              style = "display: flex; justify-content: space-between; align-items: center;",
+              h4(fileList[[i]]$name),
+              checkboxInput(paste0("checkbox_", i), label = NULL, value = TRUE)
+            ),
+            selectizeInput(
+              inputId = paste0("filter_", i),
+              label = "choose Values:",
+              choices = unique(fileList[[i]]$data$Category),
+              multiple = TRUE
+            ),
+            selectInput(
+              inputId = paste0("plotType_", i),
+              label = "choose Visualization:",
+              choices = c("Histogram", "Pie Chart", "Line Chart")
+            ),
+            uiOutput(paste0("plotUI_", i)),
+            sliderInput(paste0("opacity_", i), "Transparency:", 
+                        min = 0.1, max = 1, value = 1, step = 0.1)
+          )
+        )
+      })
+    )
+  })
+  
+  # Dynamisches Rendering der Plots
+  observe({
+    req(allData())
+    fileList <- allData()
+    
+    lapply(1:length(fileList), function(i) {
+      fileData <- fileList[[i]]
+      plotId <- paste0("plot_", i)
+      checkboxId <- paste0("checkbox_", i)
+      opacityId <- paste0("opacity_", i)
+      filterId <- paste0("filter_", i)
+      plotTypeId <- paste0("plotType_", i)
+      plotUIId <- paste0("plotUI_", i)
+      
+      # Dynamisches Rendering des UI-Elements
+      output[[plotUIId]] <- renderUI({
+        if (input[[checkboxId]]) {
+          plotOutput(outputId = plotId, height = "300px")
+        } else {
+          NULL
+        }
+      })
+      
+      # Dynamisches Rendering des Plots
+      output[[plotId]] <- renderPlot({
+        req(input[[checkboxId]])
+        alpha <- input[[opacityId]]
+        selectedCategories <- input[[filterId]]
+        plotType <- input[[plotTypeId]]
+        
+        # Filter anwenden
+        if (is.null(selectedCategories) || length(selectedCategories) == 0) {
+          filteredData <- fileData$data
+        } else {
+          filteredData <- fileData$data[fileData$data$Category %in% selectedCategories, ]
+        }
+        
+        # Plot basierend auf der Auswahl rendern
+        p <- ggplot(filteredData, aes(x = Category, y = Count, fill = Category)) + theme_minimal()
+        
+        if (plotType == "Histogram") {
+          p <- p + geom_bar(stat = "identity", alpha = alpha) + labs(title = fileData$name, x = "Kategorie", y = "Anzahl")
+        } else if (plotType == "Pie Chart") {
+          p <- p + geom_bar(stat = "identity", alpha = alpha) + coord_polar(start = 0) + labs(title = fileData$name)
+        } else if (plotType == "Line Chart") {
+          p <- p + geom_line(group = 1) + geom_point(size = 3) + labs(title = fileData$name, x = "Kategorie", y = "Anzahl")
+        }
+        
+        p + theme(
+          panel.background = element_rect(fill = "transparent", colour = NA),
+          plot.background = element_rect(fill = "transparent", colour = NA),
+          panel.grid = element_blank()
+        )
+      }, bg = "transparent")
+    })
+  })
+  
+  # Karte mit DIZ-Standorten
+  output$map <- renderLeaflet({
+    locations <- data.frame(
+      name = c("Greifswald", "Dresden", "Leipzig", "Aachen", "Hannover", "Hamburg", "Berlin"),
+      lat = c(54.093, 51.050, 51.339, 50.775, 52.374, 53.550, 52.520),
+      lng = c(13.387, 13.738, 12.374, 6.083, 9.738, 9.993, 13.405)
+    )
+    
+    germany <- gadm("Germany", level = 0, path = tempdir())  # Lade Deutschland-Grenzen
+    
+    leaflet() %>%
+      addProviderTiles(providers$CartoDB.PositronNoLabels) %>%  # Minimalistische Karte
+      addPolygons(data = germany, color = "#444444", weight = 1, fill = FALSE) %>%  # Deutschland-Umrisse
+      setView(lng = 10.5, lat = 51.0, zoom = 6) %>%
+      addCircleMarkers(
+        data = locations,
+        lat = ~lat, lng = ~lng,
+        label = ~name,
+        radius = 5, color = "darkgrey", fill = TRUE, fillOpacity = 1
+      )
+  })
+}
+
+shinyApp(ui = ui, server = server)
+
+
