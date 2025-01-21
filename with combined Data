@@ -1,0 +1,338 @@
+##Purpose of the script:
+#to load and install all packages needed to run scripts 
+###Author(s): Sarah Braun
+###Date originally Created: 2025-01-08
+###Contact Information: sarah.braun@med.uni-greifswald.de
+#For more information, please visit: github
+
+################################################################################
+# load and install packages
+################################################################################
+#packages <- c("shiny", "jsonlite", "ggplot2", "leaflet", "shinythemes", "shinyjqui", "geodata")
+#install.packages(setdiff(packages, installed.packages()[,"Package"]))
+
+library(shiny)
+library(jsonlite)
+library(ggplot2)
+library(leaflet)
+library(shinythemes)
+library(shinyjqui)
+library(geodata)
+
+################################################################################
+# create User Interface
+################################################################################
+
+ui <- fluidPage(
+  theme = shinytheme("flatly"),
+  tags$head(
+    tags$style(HTML("
+            .plot_box {
+                width: 300px;
+                padding: 15px;
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                box-shadow: 0px 2px 5px rgba(0, 0, 0, 0.2);
+                margin: 10px;
+                background-color: transparent;
+                position: absolute;
+            }
+        "))
+  ),
+  navbarPage(
+    title = "DATA VISUALIZATION",
+    
+    tabPanel("JSON-Data upload",
+             sidebarLayout(
+               sidebarPanel(
+                 h4("JSON-Data upload"),
+                 fileInput("jsonFiles", "JSON-Data upload", accept = ".json", multiple = TRUE),
+                 br(),
+                 h4("DIZ Locations in Germany"),
+                 leafletOutput("map", height = "400px")
+               ),
+               mainPanel(
+                 h4("GUIDE"),
+                 p("The application provides an intuitive interface for uploading JSON files. Users can seamlessly explore and analyze their data through various visualization options, including histograms, pie charts, and line charts. The app also allows users to adjust the transparency of the charts and offers drag-and-drop functionality, enabling the free arrangement of charts on the screen for enhanced comparison and analysis. Additionally, a dedicated Statistics view summarizes the uploaded data, presenting key metrics such as the total count and the mean value for each file."),
+                 br(),
+                 h4("JSON-Datasets"),
+                 tableOutput("jsonList")
+               )
+             )
+    ),
+    
+    tabPanel("Visualization",
+             fluidRow(
+               column(12,
+                      div(
+                        id = "plot_area",
+                        style = "position: relative; height: 800px; border: 1px solid #ddd; overflow: hidden;",
+                        uiOutput("plotsUI")
+                      )
+               )
+             )
+    ),
+    
+    tabPanel("Statistics",
+             fluidRow(
+               column(12,
+                      h4("Statistics for Uploaded Data"),
+                      tableOutput("statTable")
+               )
+             )
+    ),
+    
+    tabPanel("Combined Data",
+             sidebarLayout(
+               sidebarPanel(
+                 h4("Select JSON Files to Combine"),
+                 checkboxGroupInput("combineFiles", "Choose Files", choices = NULL),
+                 uiOutput("valueSelectors"),
+                 actionButton("combineData", "Combine Data"),
+                 downloadButton("downloadCombined", "Download Combined Data as JSON")
+               ),
+               mainPanel(
+                 plotOutput("combinedPlot")
+               )
+             )
+    )
+  )
+)
+
+################################################################################
+# create Server
+################################################################################
+
+server <- function(input, output, session) {
+  
+  # Load JSON Datasets
+  loadJsonData <- function(filePath) {
+    jsonData <- fromJSON(filePath)
+    data.frame(
+      Category = jsonData$Histogram$Category$`@value`,
+      Count = as.numeric(jsonData$Histogram$Count$`@value`)
+    )
+  }
+  
+ 
+  allData <- reactive({
+    req(input$jsonFiles)
+    filePaths <- input$jsonFiles$datapath
+    fileNames <- input$jsonFiles$name
+    
+    # Liste von DataFrames mit Dateinamen
+    dataList <- lapply(seq_along(filePaths), function(i) {
+      list(
+        name = fileNames[i],
+        data = loadJsonData(filePaths[i])
+      )
+    })
+    dataList
+  })
+  
+  # Liste der hochgeladenen JSON-Dateien
+  output$jsonList <- renderTable({
+    req(input$jsonFiles)
+    data.frame(Dateien = input$jsonFiles$name)
+  })
+  
+  # Statistik der hochgeladenen Dateien
+  output$statTable <- renderTable({
+    req(allData())
+    fileList <- allData()
+    
+    statsList <- lapply(1:length(fileList), function(i) {
+      fileData <- fileList[[i]]
+      filteredData <- fileData$data
+      
+      list(
+        Datei = fileData$name,
+        Menge = nrow(filteredData),
+        Mittelwert = ifelse(nrow(filteredData) > 0, mean(filteredData$Count, na.rm = TRUE), NA)
+      )
+    })
+    
+    do.call(rbind, statsList)
+  })
+  
+  # Dynamische Auswahl der Dateien für Combined Data
+  observe({
+    req(input$jsonFiles)  # Wir müssen sicherstellen, dass Dateien hochgeladen wurden
+    
+    # Dynamisch die Namen der hochgeladenen Dateien in den checkboxGroupInput setzen
+    updateCheckboxGroupInput(session, "combineFiles", 
+                             choices = sapply(allData(), function(x) x$name),
+                             selected = sapply(allData(), function(x) x$name))  # Alle Dateien auswählen
+  })
+  
+  # Dynamische Auswahl der Werte für jedes ausgewählte File
+  observe({
+    req(input$combineFiles)  # Sicherstellen, dass Dateien ausgewählt wurden
+    selectedFiles <- input$combineFiles
+    fileList <- allData()
+    
+    valueSelectors <- lapply(selectedFiles, function(fileName) {
+      fileData <- fileList[[which(sapply(fileList, function(f) f$name == fileName))]]$data
+      selectInput(paste0("values_", fileName), 
+                  label = paste("Select values for", fileName), 
+                  choices = unique(fileData$Category), 
+                  selected = unique(fileData$Category), 
+                  multiple = TRUE)
+    })
+    
+    output$valueSelectors <- renderUI({
+      tagList(valueSelectors)
+    })
+  })
+  
+  # Kombinieren der Daten, wenn der Button gedrückt wird
+  observeEvent(input$combineData, {
+    req(input$combineFiles)
+    selectedFiles <- input$combineFiles
+    fileList <- allData()
+    
+    combinedData <- do.call(rbind, lapply(selectedFiles, function(fileName) {
+      fileData <- fileList[[which(sapply(fileList, function(f) f$name == fileName))]]$data
+      selectedCategories <- input[[paste0("values_", fileName)]]
+      
+      filteredData <- fileData[fileData$Category %in% selectedCategories, ]
+      filteredData$Source <- fileName  # Quelle angeben
+      return(filteredData)
+    }))
+    
+    output$combinedPlot <- renderPlot({
+      req(combinedData)
+      ggplot(combinedData, aes(x = Category, y = Count, fill = Source)) +
+        geom_bar(stat = "identity") +
+        labs(title = "Combined Data", x = "Category", y = "Count") +
+        theme_minimal()
+    })
+    
+    # Download-Button für die kombinierten Daten
+    output$downloadCombined <- downloadHandler(
+      filename = function() {
+        paste("combined_data_", Sys.Date(), ".json", sep = "")
+      },
+      content = function(file) {
+        write_json(combinedData, file)
+      }
+    )
+  })
+  
+  # Karte mit DIZ-Standorten
+  output$map <- renderLeaflet({
+    locations <- data.frame(
+      name = c("Greifswald", "Dresden", "Leipzig", "Aachen", "Hannover", "Hamburg", "Berlin"),
+      lat = c(54.093, 51.050, 51.339, 50.775, 52.374, 53.550, 52.520),
+      lng = c(13.387, 13.738, 12.374, 6.083, 9.738, 9.993, 13.405)
+    )
+    
+    germany <- gadm("Germany", level = 0, path = tempdir())  # Lade Deutschland-Grenzen
+    
+    leaflet() %>%
+      addProviderTiles(providers$CartoDB.PositronNoLabels) %>%  # Minimalistische Karte
+      addPolygons(data = germany, color = "#444444", weight = 1, fill = FALSE) %>%  # Deutschland-Umrisse
+      setView(lng = 10.5, lat = 51.0, zoom = 6) %>%
+      addCircleMarkers(
+        data = locations,
+        lat = ~lat, lng = ~lng,
+        label = ~name,
+        radius = 5, color = "darkgrey", fill = TRUE, fillOpacity = 1
+      )
+  })
+  
+  # Dynamische UI für die Plots
+  output$plotsUI <- renderUI({
+    req(allData())
+    fileList <- allData()
+    
+    tagList(
+      lapply(1:length(fileList), function(i) {
+        jqui_draggable(
+          div(
+            id = paste0("plot_box_", i),
+            class = "plot_box",
+            div(
+              style = "display: flex; justify-content: space-between; align-items: center;",
+              h4(fileList[[i]]$name),
+              checkboxInput(paste0("checkbox_", i), label = NULL, value = TRUE)
+            ),
+            selectizeInput(
+              inputId = paste0("filter_", i),
+              label = "choose Values:",
+              choices = unique(fileList[[i]]$data$Category),
+              multiple = TRUE
+            ),
+            selectInput(
+              inputId = paste0("plotType_", i),
+              label = "choose Visualization:",
+              choices = c("Histogram", "Pie Chart", "Line Chart")
+            ),
+            uiOutput(paste0("plotUI_", i)),
+            sliderInput(paste0("opacity_", i), "Transparency:", 
+                        min = 0.1, max = 1, value = 1, step = 0.1)
+          )
+        )
+      })
+    )
+  })
+  
+  # Dynamisches Rendering der Plots
+  observe({
+    req(allData())
+    fileList <- allData()
+    
+    lapply(1:length(fileList), function(i) {
+      fileData <- fileList[[i]]
+      plotId <- paste0("plot_", i)
+      checkboxId <- paste0("checkbox_", i)
+      opacityId <- paste0("opacity_", i)
+      filterId <- paste0("filter_", i)
+      plotTypeId <- paste0("plotType_", i)
+      plotUIId <- paste0("plotUI_", i)
+      
+      # Dynamisches Rendering des UI-Elements (Plot-Anzeige mit Checkbox)
+      output[[plotUIId]] <- renderUI({
+        if (input[[checkboxId]]) {
+          plotOutput(outputId = plotId, height = "300px")
+        } else {
+          NULL
+        }
+      })
+      
+      # Dynamisches Rendering des Plots basierend auf Auswahl
+      output[[plotId]] <- renderPlot({
+        req(input[[checkboxId]])
+        alpha <- input[[opacityId]]
+        selectedCategories <- input[[filterId]]
+        plotType <- input[[plotTypeId]]
+        
+        # Filter anwenden
+        if (is.null(selectedCategories) || length(selectedCategories) == 0) {
+          filteredData <- fileData$data
+        } else {
+          filteredData <- fileData$data[fileData$data$Category %in% selectedCategories, ]
+        }
+        
+        # Plot basierend auf der Auswahl rendern
+        p <- ggplot(filteredData, aes(x = Category, y = Count, fill = Category)) + theme_minimal()
+        
+        if (plotType == "Histogram") {
+          p <- p + geom_bar(stat = "identity", alpha = alpha) + labs(title = fileData$name, x = "Kategorie", y = "Anzahl")
+        } else if (plotType == "Pie Chart") {
+          p <- p + geom_bar(stat = "identity", alpha = alpha) + coord_polar(start = 0) + labs(title = fileData$name)
+        } else if (plotType == "Line Chart") {
+          p <- p + geom_line(group = 1) + geom_point(size = 3) + labs(title = fileData$name, x = "Kategorie", y = "Anzahl")
+        }
+        
+        p + theme(
+          panel.background = element_rect(fill = "transparent", colour = NA),
+          plot.background = element_rect(fill = "transparent", colour = NA),
+          panel.grid = element_blank()
+        )
+      }, bg = "transparent")
+    })
+  })
+}
+
+shinyApp(ui = ui, server = server)
