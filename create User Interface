@@ -1,3 +1,5 @@
+
+# -------------------------------------------------------------------------------
 ################################################################################
 # create User Interface
 ################################################################################
@@ -59,6 +61,193 @@ ui <- fluidPage(
                       tableOutput("statTable")
                )
              )
+    )
+  )
+)
+
+# ────────────────────────────────────────────────────────────────────────────── #
+# 1. Define Main UI Container
+# ────────────────────────────────────────────────────────────────────────────── #
+ui <- fluidPage(
+  
+  ## 1.1 Apply a Consistent Theme
+  theme = shinytheme("spacelab"), 
+  
+  ## 1.2 Inject Custom CSS and JavaScript for Enhanced Interactivity
+  tags$head(
+    ## 1.2.1 Custom CSS Block
+    ## Styles all plot containers with fixed dimensions, border, shadow and
+    ## rounded corners, enabling absolute positioning within their parent.
+    tags$style(HTML("
+      .plot_box {
+        width: 300px;
+        padding: 15px;
+        border: 1px solid #B0B0B0;
+        border-radius: 8px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        background-color: transparent;
+        position: absolute;
+      }
+    ")),
+    
+    ## 1.2.2 JavaScript to Stack All Plots
+    ## On clicking the “Stack All Plots” button, resets every plot_box's
+    ## top/left CSS to (0,0) so that all panels overlap exactly.
+    tags$script(HTML("
+      $(document).on('click', '#stackPlots', function() {
+        $('.plot_box').css({top: '0px', left: '0px'});
+      });
+    ")),
+    
+    ## 1.2.3 JavaScript to Stack Selected Plots
+    ## Reads selected plot names from a multi-select input, limits stacking to
+    ## the first two entries, and repositions only those panels.
+    tags$script(HTML("
+      $(document).on('click', '#stackSelectedPlots', function() {
+        var selectedPlots = $('#selectedPlotsToStack').val();
+        if (selectedPlots) {
+          if(selectedPlots.length > 2) { selectedPlots = selectedPlots.slice(0,2); }
+          selectedPlots.forEach(function(plotName) {
+             $('.plot_box[data-plot-name=\"' + plotName + '\"]').css({top: '0px', left: '0px'});
+          });
+        }
+      });
+    "))
+  ),
+  
+  # ──────────────────────────────────────────────────────────────────────────── #
+  # 2. Navigation Structure
+  # ──────────────────────────────────────────────────────────────────────────── #
+  navbarPage(
+    title = "Medical Data Visualization Dashboard",
+    
+    # ---------------------------------------------------------------------------
+    # 2.1 Tab: JSON/CSV Data Upload
+    # ---------------------------------------------------------------------------
+    tabPanel("JSON/CSV Data Upload",
+      sidebarLayout(
+        sidebarPanel(
+          ## 2.1.1 File Input Widget
+          ## Accepts multiple JSON or CSV files for upload.
+          h4("Data Upload"),
+          fileInput("jsonFiles", "Upload Data (.json, .csv)",
+                    accept = c(".json", ".csv"), multiple = TRUE),
+          
+          ## 2.1.2 Dynamic Column Mapping UI
+          ## Rendered server-side based on uploaded CSV headers.
+          uiOutput("mappingUI"),
+          br(),
+          
+          ## 2.1.3 Geospatial Display
+          ## Shows locations of data integration centers via Leaflet.
+          h4("Data Integration Centers in Germany"),
+          leafletOutput("map", height = "400px")
+        ),
+        mainPanel(
+          ## 2.1.4 User Guide Section
+          h4("Guide"),
+          p("This application provides an intuitive interface for uploading JSON or CSV files containing medical data. Users can explore and analyze their data through various visualization options—including histograms, pie charts, and line charts. Adjust the chart transparency and freely arrange the plots via drag-and-drop for enhanced comparison and analysis. Additionally, a dedicated Statistics section summarizes the uploaded data with key metrics such as total count and mean values per file."),
+          br(),
+          
+          ## 2.1.5 Uploaded File Inventory
+          ## Displays a table of filenames and basic metadata.
+          h4("Uploaded Data Files"),
+          tableOutput("jsonList")
+        )
+      )
+    ),
+    
+    # ---------------------------------------------------------------------------
+    # 2.2 Tab: Visualization
+    # ---------------------------------------------------------------------------
+    tabPanel("Visualization",
+      fluidRow(
+        column(12,
+          ## 2.2.1 Controls for Stacking Behavior
+          actionButton("stackPlots", "Stack All Plots"),
+          br(), br(),
+          selectInput("selectedPlotsToStack", 
+                      "Select two plots to stack:", 
+                      choices = NULL, multiple = TRUE),
+          actionButton("stackSelectedPlots", "Stack Selected Plots"),
+          br(), br(),
+          
+          ## 2.2.2 Dynamic Plot Container
+          ## Positioned relative to allow absolute positioning of child .plot_box.
+          div(
+            id = "plot_area",
+            style = "position: relative; height: 800px; 
+                     border: 1px solid #DDD; overflow: hidden;",
+            uiOutput("plotsUI")
+          )
+        )
+      )
+    ),
+    
+    # ---------------------------------------------------------------------------
+    # 2.3 Tab: Combined Data
+    # ---------------------------------------------------------------------------
+    tabPanel("Combined Data",
+      fluidRow(
+        ## 2.3.1 Visualization Column
+        column(width = 8,
+          h4("Combined Data Plot"),
+          plotOutput("combinedPlot"),
+          hr(),
+          h4("Intersection Plot"),
+          plotOutput("intersectionPlot")
+        ),
+        
+        ## 2.3.2 Control Panel Column
+        column(width = 4,
+          div(
+            style = "padding: 15px; border: 1px solid #DDD; border-radius: 8px; background-color: #FFF;",
+            h4("Data Controls"),
+            checkboxGroupInput("combineFiles", 
+                               "Select Files to Combine", 
+                               choices = NULL),
+            uiOutput("valueSelectors"),
+            actionButton("combineData", "Combine Data"),
+            downloadButton("downloadCombined", 
+                           "Download Combined Data (JSON)"),
+            br(), br(),
+            
+            h4("Intersection Settings"),
+            p("Only categories present in ALL selected files are considered."),
+            selectInput("intersectionValues", 
+                        "Common Categories", 
+                        choices = NULL, multiple = TRUE),
+            actionButton("combineIntersection", 
+                         "Combine Intersection Data"),
+            downloadButton("downloadIntersection", 
+                           "Download Intersection Data (JSON)")
+          )
+        )
+      )
+    ),
+    
+    # ---------------------------------------------------------------------------
+    # 2.4 Tab: Statistics
+    # ---------------------------------------------------------------------------
+    tabPanel("Statistics",
+      fluidRow(
+        column(12,
+          h4("Statistics for Uploaded Data"),
+          p("Below is a table with basic statistics for each uploaded file:"),
+          tableOutput("statTable"),
+          hr(),
+          
+          h4("Category Summary"),
+          p("The table below shows each unique category across all uploaded files. The cells are color-coded as follows:"),
+          tags$ul(
+            tags$li(strong("Green:"),   " Category present in ALL files"),
+            tags$li(strong("Yellow:"),  " Category present in at least 2 (but not all) files"),
+            tags$li(strong("Red:"),     " Category present in only 1 file")
+          ),
+          p("The categories are sorted by color–green first, then yellow, then red."),
+          uiOutput("categorySummary")
+        )
+      )
     )
   )
 )
