@@ -260,40 +260,7 @@ Authors & Contact
 
         Statistics Tab: Builds HTML table with inline color coding for category presence.
 
-Dynamic CSV Mapping
 
-When a CSV file lacks the standard Category or Count headers, the app:
-
-    Detects missing columns.
-
-    Renders two selectInput() controls for the user to map their column names to Category and Count.
-
-    Waits (req()) until both mappings are provided before proceeding with data loading.
-
-This ensures scientific rigor and prevents pipeline breaks due to inconsistent input schemas.
-Authors & Contact
-
-    Original Author: Sarah Braun
-
-    Date Created: January 8, 2025
-
-    Email: sarah.braun@med.uni-greifswald.de
-
-    Repository: https://github.com/yourusername/medical-data-dashboard
-Author: Sarah Braun
-
-    Date Created: January 8, 2025
-
-    Email: sarah.braun@med.uni-greifswald.de
-
-    Repository: https://github.com/yourusername/medical-data-dashboard
-
-
-    Date Created: January 8, 2025
-
-    Email: sarah.braun@med.uni-greifswald.de
-
-    Repository: https://github.com/yourusername/medical-data-dashboard
 
 
 
