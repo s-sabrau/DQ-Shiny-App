@@ -21,8 +21,7 @@ A Shiny-based application for interactive upload, exploration, combination and s
 This script boots up and configures all required R packages to run the dashboard application. It empowers users to:
 
 1. **Upload** JSON or CSV files containing medical histogram data.  
-2. **Dynamically map** non-standard CSV column names to required fields (`Category` and `Count`).  
-3. **Visualize** data via stacked histograms, pie charts, and line charts in draggable plot boxes.  
+2. **Visualize** data via stacked histograms, pie charts, and line charts in draggable plot boxes.  
 4. **Combine** multiple datasets into unified and intersection views with download capability.  
 5. **Summarize** key statistics and category distributions across all uploaded files.
 
