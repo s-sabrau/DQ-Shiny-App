@@ -31,7 +31,6 @@ This script boots up and configures all required R packages to run the dashboard
 
 - **Flexible Data Upload**  
   - Accepts multiple `.json` and `.csv` files in a single session.  
-  - Automatic JSON parsing; user-guided CSV column mapping when headers differ.
 
 - **Interactive Mapping UI**  
   - Generates per-file mapping controls only if expected columns are absent.  
@@ -50,9 +49,6 @@ This script boots up and configures all required R packages to run the dashboard
 - **Statistical Summary**  
   - Tabular display of per-file count and mean values.  
   - Color-coded category presence matrix (green/yellow/red) for cross-file comparison.
-
-- **Geospatial Context**  
-  - Embedded Leaflet map showing all German data integration centers.
 
 ---
 
