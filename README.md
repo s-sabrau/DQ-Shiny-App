@@ -1,148 +1,170 @@
-Interactive Medical Data App
+# Interactive Medical Data App
 
-Version: 1.0.0Date: January 8, 2025
-Contact: sarah.braun@med.uni-greifswald.de
+**Version**: 1.0.0
+**Date**: January 8, 2025
+**Contact**: [sarah.braun@med.uni-greifswald.de](mailto:sarah.braun@med.uni-greifswald.de)
 
-Authors
+---
 
-Sarah Braun
+## Authors
 
-Christian Draeger
+* Sarah Braun
+* Christian Draeger
+* Lea Michaelis
+* Sherry Freiesleben
+* Dagmar Waltemath
+* Matthias Löbe
+* Judith Wodke
 
-Lea Michaelis
+---
 
-Sherry Freiesleben
+## Abstract
 
-Dagmar Waltemath
+> This Shiny application provides an interactive platform for uploading, integrating, visualizing, and summarizing heterogeneous medical datasets (CSV, JSON, FHIR). Built on state-of-the-art R packages (e.g., **shiny**, **fhircrackr**, **ggplot2**, **leaflet**), it enables researchers and clinical IT teams to explore data quality, distributions, and shared categories across multiple sources with full reproducibility and modularity.
 
-Matthias Löbe
+---
 
-Judith Wodke
+## Background
 
-Abstract
+* **Heterogeneous Data Sources**
+  Clinical and research data often exist in disparate formats: CSV exports, JSON-formatted histograms, and HL7 FHIR APIs.
 
-This Shiny application provides an interactive platform for uploading, integrating, visualizing, and summarizing heterogeneous medical datasets (CSV, JSON, FHIR). Built on state-of-the-art R packages (e.g., shiny, fhircrackr, ggplot2, leaflet), it enables researchers and clinical IT teams to explore data quality, distributions, and shared categories across multiple sources with full reproducibility and modularity.
+* **Need for Integration**
+  Comparative analyses require harmonization of these diverse formats into a unified view.
 
-Background
+* **Interactive Dashboards**
+  Shiny apps facilitate real-time exploration for non-technical users.
 
-Heterogeneous Data SourcesClinical and research data often exist in disparate formats: CSV exports from laboratory information systems, JSON-formatted histograms, and HL7 FHIR servers.
+---
 
-Need for IntegrationComparative analyses require harmonization of these diverse formats into a unified view.
+## Features
 
-Interactive DashboardsShiny apps facilitate non-technical users’ exploration of complex datasets in real time.
+| Category        | Details                          |
+| --------------- | -------------------------------- |
+| **Data Import** | - Upload multiple CSV/JSON files |
 
-Features
+```
+                               - Connect to any FHIR® server (default: HAPI Test Server – _placeholder; replace with your internal FHIR endpoint_)
+```
 
-Data Import
+\| **Column Mapping**            | Dynamic mapping of CSV columns when `Category` and `Count` are not standard               |
+\| **Visual Exploration**        | - Draggable mini-plots (Histogram, Pie, Line) with transparency control
+\- “Stack All” / “Stack Selected” controls                                               |
+\| **Data Combination & Intersection** | - Stacked-bar combination of selected categories across files
+\- Identification & export of category intersections                                    |
+\| **Statistical Overview**      | - Tables of dataset sizes, means, category presence
+\- Color-coded summary (all / multiple / single sources)                                |
+\| **Geospatial Visualization**  | Map of German Data Integration Centers (via **leaflet**, **geodata**)                     |
 
-Upload multiple CSV or JSON files
+---
 
-Connect to any FHIR® server (default: HAPI Test Server – placeholder; replace with your internal FHIR endpoint in production)
+## System Architecture
 
-Column Mapping
+This application adopts a **modular Shiny framework** for clarity, testability, and maintainability:
 
-Dynamic mapping of CSV columns when “Category” and “Count” are not standard
+1. **UI Layer**
+   Defined via `fluidPage()` and `navbarPage()`, grouping functionality into:
 
-Visual Exploration
+   * Data Upload
+   * Visualization
+   * Combined Data
+   * Statistics
 
-Draggable mini-plots (Histogram, Pie Chart, Line Chart) with adjustable transparency
+2. **Server Layer**
 
-“Stack All” or “Stack Selected” controls for plot arrangement
+   * Reactivity: `reactive()`, `eventReactive()` ensure immediate UI updates
+   * Observers: `observe()`, `observeEvent()` handle user-driven events
 
-Data Combination & Intersection
+3. **Helper Modules**
 
-Stacked-bar combination of selected categories across files
+   * `loadJsonData()`, `loadCsvData()`, `make_safe_id()` encapsulate parsing, validation, sanitization
 
-Identification and export of category intersections
+4. **Plotting Components**
 
-Statistical Overview
+   * `ggplot2` charts and **leaflet** maps via separate render functions (`renderPlot()`, `renderLeaflet()`)
 
-Automatic tables of dataset sizes, means, and category presence
+5. **Data Integration Pipeline**
+   Central reactive `allData` unifies datasets from uploads and FHIR requests, powering both visualization and statistics without redundant computations.
 
-Color-coded summary indicating categories present in all, multiple, or single sources
+6. **Extensibility & Testing**
 
-Geospatial Visualization
+   * Modular structure allows adding new data sources or plot types
+   * Supports unit testing of individual functions independent of UI
 
-Map of German Data Integration Centers using leaflet and geodata
+---
 
-System Architecture
+## Requirements
 
-This application adopts a modular Shiny-based framework designed for clarity, testability, and maintainability:
+* **R** ≥ 4.2
+* **OS**: Linux, macOS, Windows
+* **Packages** (installed automatically via `ensure_pkg()`):
 
-UI Layer: Defined by fluidPage() and navbarPage(), organizing functionality into clear tabs (Data Upload, Visualization, Combined Data, Statistics).
+  ```r
+  install.packages(c(
+    "shiny", "shinythemes", "shinyjqui",
+    "jsonlite", "readr", "fhircrackr", "httr",
+    "dplyr", "tidyr", "ggplot2", "leaflet",
+    "geodata", "terra"
+  ))
+  ```
 
-Server Layer: Implements reactive (reactive(), eventReactive()) and observer (observe(), observeEvent()) constructs to handle data loading, mapping, combination, and plotting in response to user inputs.
+---
 
-Helper Modules: Encapsulated functions (loadJsonData(), loadCsvData(), make_safe_id()) ensure consistent data parsing, validation, and sanitization across different file formats.
+## Installation
 
-Plotting Components: Separate reactive outputs for ggplot2-based charts and leaflet maps, each with their own render functions (renderPlot(), renderLeaflet()) to maintain loose coupling.
+1. **Clone repository**
 
-Data Integration Pipeline: Central reactive object (allData) unifies datasets from file uploads and FHIR requests, driving both visualization and statistical summaries without redundant computations.
+   ```bash
+   git clone https://github.com/YourOrg/medical-data-dashboard.git
+   cd medical-data-dashboard
+   ```
 
-Extensibility & Testing: Modular structure allows insertion of new data sources or plot types via additional helper modules, and supports unit testing of individual functions without UI dependencies.
+2. **Install & Run**
 
-By replacing the previous monolithic depiction with this modular breakdown, the architecture remains robust, scalable, and aligned with best practices for scientific reproducibility.
+   ```r
+   source("app.R")  # ensure_pkg() installs missing dependencies
+   runApp("app.R")
+   ```
 
-Requirements
+---
 
-R ≥ 4.2
+## Usage
 
-Operating System: Linux, macOS, or Windows
+1. Open `(...)` in your browser.
+2. Navigate tabs:
 
-R packages (installed automatically via ensure_pkg()):
+   * **Data Upload**: Upload CSV/JSON or connect to FHIR (*replace placeholder URL*)
+   * **Visualization**: Arrange & filter mini-plots
+   * **Combined Data**: Combine categories, download JSON
+   * **Statistics**: View summaries & category presence
 
-install.packages(c(
-  "shiny", "shinythemes", "shinyjqui",
-  "jsonlite", "readr", "fhircrackr", "httr",
-  "dplyr", "tidyr", "ggplot2", "leaflet",
-  "geodata", "terra"
-))
+---
 
-Installation
+## Quality Assurance & Reproducibility
 
-Clone repository
-(...)
+* **Version Control**: Git with feature branches & peer review
+* **Unit Testing**: Planned `testthat` coverage for core functions
+* **Documentation**: Inline comments + precise README ensure transparency
 
-Install dependencies & run
+---
 
-source("app.R")  # ensure_pkg() will install missing packages automatically
-runApp("app.R")
+## Future Directions
 
-Usage
+* **Extended FHIR Support**: Add Observations, Conditions
+* **Automated Testing**: Full `testthat` suite integration
+* **CI/CD**: 
 
-Launch the app and open (...) in your browser.
+---
 
-Navigate through the tabs:
+## License & Citation
 
-Data Upload: Upload CSV/JSON files or connect to FHIR (replace default HAPI Test Server URL).
+* **License**: (...)
+* **Citation**:
 
-Visualization: Arrange and filter mini-plots.
+  > Braun S., Draeger C., Michaelis L., et al. (2025). *Interactive Medical Data App*. GitHub. [https://github.com/YourOrg/medical-data-dashboard](https://github.com/YourOrg/medical-data-dashboard)
 
-Combined Data: Combine selected categories and download JSON.
+---
 
-Statistics: View statistical summaries and category presence table.
+> **Note**: Default FHIR server (`http://hapi.fhir.org/baseR4`) is a placeholder. Replace with your institution’s internal FHIR endpoint in production.
 
-Quality Assurance & Reproducibility
-
-Version Control: Git branching model with peer reviews for feature development.
-
-Planned Unit Tests: Use testthat for key functions (e.g., data loading).
-
-Documentation: Inline code comments and this scientifically precise README ensure transparency.
-
-Future Directions
-
-Extended FHIR Support: Add resources such as Observations and Conditions.
-
-Automated Testing: Full testthat suite integration.
-
-CI/CD Pipeline: Dockerized deployment for automated testing and hosting.
-
-License & Citation
-
-License: (...)
-
-How to Cite:Braun S., Draeger C., Michaelis L., et al. (2025). Interactive Medical Data App. GitHub. https://github.com/YourOrg/medical-data-dashboard
-
-Note: The default FHIR server (http://hapi.fhir.org/baseR4) is provided as an example only. In a production environment, replace this URL with your institution’s internal FHIR endpoint.
 
