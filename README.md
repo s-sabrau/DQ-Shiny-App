@@ -39,9 +39,16 @@
 
 ## Features
 
-| Category        | Details                          |
-| --------------- | -------------------------------- |
-| **Data Import** | - Upload multiple CSV/JSON files |
+| **Category**                       | **Description**                                                                                                                                             |
+|------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Data Import**                    | • Upload multiple CSV or JSON files<br>• Connect to any FHIR® server (default: HAPI Test Server – placeholder; replace with your internal FHIR endpoint)    |
+| **Column Mapping**                 | • Dynamically map ‘Category’ and ‘Count’ columns when CSV headers differ                                                                                   |
+| **Visual Exploration**             | • Draggable mini-plots (Histogram, Pie Chart, Line Chart) with adjustable transparency<br>• “Stack All” and “Stack Selected” controls                       |
+| **Data Combination & Intersection**| • Stacked-bar combination of selected categories across datasets<br>• Identify and export category intersections as JSON                                     |
+| **Statistical Overview**           | • Auto-generated tables: dataset sizes, mean counts<br>• Color-coded summary of category prevalence (all/multiple/single sources)                         |
+| **Geospatial Visualization**       | • Interactive map of German Data Integration Centers using **leaflet** and **geodata**                                                                      |
+
+---
 
 ```
                                - Connect to any FHIR® server (default: HAPI Test Server – _placeholder; replace with your internal FHIR endpoint_)
