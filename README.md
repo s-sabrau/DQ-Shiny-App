@@ -37,8 +37,7 @@ shiny, shinythemes, shinyjqui, jsonlite, readr, fhircrackr, httr, dplyr, tidyr, 
 Installation & Usage
 
 ### 1. Clone the repository
-git clone https://github.com/YourOrg/medical-data-dashboard.git
-cd medical-data-dashboard
+git clone https://github.com/
 2. Start the app
 You can run the app directly via R or RStudio. All dependencies are checked and installed on launch.
 
