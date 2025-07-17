@@ -91,11 +91,12 @@ ui <- fluidPage(
                       value = "http://hapi.fhir.org/baseR4"),
             numericInput("max_bundles", "Max Bundles:",
                          value = 10, min = 1, step = 1),
-            actionButton("load_fhir", "Load FHIR Data")
+            actionButton("load_fhir", "Load FHIR Data"),
+            uiOutput("fhirMappingUI")  # Add this line
           ),
-          br(),
-          h4("Data Integration Centers (Germany)"),
-          leafletOutput("map", height = "400px")
+          #br(),
+          #h4("Data Integration Centers (Germany)"),
+          #leafletOutput("map", height = "400px")
         ),
         mainPanel(
           h4("Uploaded / Loaded Datasets"),
@@ -192,19 +193,19 @@ server <- function(input, output, session) {
   loadCsvData <- function(path, idx) {
     df <- read.csv(path, stringsAsFactors = FALSE)
     if (!all(c("Category","Count") %in% colnames(df))) {
-      req(input[[paste0("map_cat_", idx)]],
-          input[[paste0("map_cnt_", idx)]])
-      df <- data.frame(
-        Category = df[[ input[[paste0("map_cat_", idx)]] ]],
-        Count    = as.numeric(df[[ input[[paste0("map_cnt_", idx)]] ]]),
-        stringsAsFactors = FALSE
-      )
+      req(input[[paste0("map_cat_", idx)]])
+      category_col <- input[[paste0("map_cat_", idx)]]
+
+      # Count occurrences of each category
+      df <- df %>%
+        count(Category = .data[[category_col]], name = "Count") %>%
+        as.data.frame(stringsAsFactors = FALSE)
     }
     df$Count <- as.numeric(df$Count)
     df[!is.na(df$Count), ]
   }
 
-  # 4.3 Dynamic UI: mapping CSV columns
+  # 4.3.1 Dynamic UI: mapping CSV columns
   output$mappingUI <- renderUI({
     req(input$dataFiles)
     fps <- input$dataFiles$datapath
@@ -212,37 +213,118 @@ server <- function(input, output, session) {
     uiList <- lapply(seq_along(fps), function(i) {
       if (tools::file_ext(fns[i]) == "csv") {
         df0 <- read.csv(fps[i], stringsAsFactors = FALSE)
-        if (!all(c("Category","Count") %in% colnames(df0))) {
-          tagList(
-            h4(paste("Map columns for", fns[i])),
-            selectInput(paste0("map_cat_", i),
-                        "Category column:", choices = colnames(df0)),
-            selectInput(paste0("map_cnt_", i),
-                        "Count column:",    choices = colnames(df0))
-          )
-        }
+        #if (!all(c("Category","Count") %in% colnames(df0))) {
+        tagList(
+          h4(paste("Map columns for", fns[i])),
+          selectInput(paste0("map_cat_", i),
+                      "Category column:", choices = colnames(df0)),
+          #selectInput(paste0("map_cnt_", i),
+          #            "Count column:",    choices = colnames(df0))
+        )
+        #}
       }
     })
     do.call(tagList, uiList)
   })
 
-  # 4.4 Fetch FHIR data
-  fhirSummary <- eventReactive(input$load_fhir, {
+  # 4.3.2 Dynamic UI: mapping FHIR categories
+  output$fhirMappingUI <- renderUI({
+    req(input$data_source == "fhir")
+    if (!is.null(fhirRawData())) {  # Changed from fhirColumns()
+      selectInput("fhir_category_col", "Category column:",
+                  choices = colnames(fhirRawData()),
+                  selected = colnames(fhirRawData())[1])  # Auto-select first column
+    }
+  })
+
+  # 4.4a Fetch comprehensive FHIR data using _include and _revinclude
+  fhirRawData <- eventReactive(input$load_fhir, {
     req(input$fhir_url, input$max_bundles)
+
+    # Build comprehensive search request
     req_fhir <- fhir_url(url = input$fhir_url, resource = "Patient")
-    bundles  <- fhir_search(request = req_fhir, verbose = 0,
-                            max_bundles = input$max_bundles)
-    desc     <- fhir_table_description(
-                  resource = "Patient",
-                  sep = " || ",
-                  brackets = character(0),
-                  rm_empty_cols = FALSE,
-                  format = "compact"
-                )
-    df_pat   <- fhir_crack(bundles = bundles, design = desc, verbose = 0)
-    df_pat %>%
-      mutate(gender = ifelse(is.na(gender), "unknown", gender)) %>%
-      count(Category = gender, name = "Count") %>%
+    search_request <- paste0(req_fhir, "?_include=*&_revinclude=*")
+
+    # Execute search
+    bundles <- fhir_search(request = search_request,
+                           verbose = 0,
+                           max_bundles = input$max_bundles)
+
+    # Extract all resource types from bundles
+    all_resources <- list()
+
+    # Get unique resource types
+    resource_types <- unique(unlist(lapply(bundles, function(bundle) {
+      if (!is.null(bundle$entry)) {
+        sapply(bundle$entry, function(entry) {
+          entry$resource$resourceType
+        })
+      }
+    })))
+
+    # Process each resource type
+    for (rt in resource_types) {
+      desc <- fhir_table_description(
+        resource = rt,
+        sep = " || ",
+        brackets = character(0),
+        rm_empty_cols = FALSE,
+        format = "compact"
+      )
+
+      df <- fhir_crack(bundles = bundles, design = desc, verbose = 0)
+
+      if (!is.null(df) && nrow(df) > 0) {
+        all_resources[[rt]] <- df
+      }
+    }
+
+    all_resources
+  })
+
+  # 4.4b UI for selecting resource type to visualize
+  output$fhirResourceTypeUI <- renderUI({
+    req(fhirRawData())
+    available_resources <- names(fhirRawData())
+
+    if (length(available_resources) > 0) {
+      selectInput("fhir_resource_to_viz", "Resource Type to Visualize:",
+                  choices = available_resources,
+                  selected = available_resources[1])
+    }
+  })
+
+  # 4.4c Update the mapping UI to show columns from selected resource
+  output$fhirMappingUI <- renderUI({
+    req(input$data_source == "fhir")
+    req(fhirRawData())
+    req(input$fhir_resource_to_viz)
+
+    df <- fhirRawData()[[input$fhir_resource_to_viz]]
+    if (!is.null(df) && nrow(df) > 0) {
+      selectInput("fhir_category_col", "Category column:",
+                  choices = colnames(df),
+                  selected = colnames(df)[1])
+    }
+  })
+
+  # 4.4d Process FHIR data based on selected resource and category
+  fhirSummary <- reactive({
+    req(fhirRawData())
+    req(input$fhir_resource_to_viz)
+    req(input$fhir_category_col)
+
+    df <- fhirRawData()[[input$fhir_resource_to_viz]]
+    req(df)
+
+    category_col <- input$fhir_category_col
+
+    # Handle NA values
+    df[[category_col]] <- ifelse(is.na(df[[category_col]]), "unknown", df[[category_col]])
+
+    # Count occurrences
+    df %>%
+      count(Category = .data[[category_col]], name = "Count") %>%
       as.data.frame(stringsAsFactors = FALSE)
   })
 
@@ -413,21 +495,21 @@ server <- function(input, output, session) {
   )
 
   # 4.12 Map of German integration centers
-  output$map <- renderLeaflet({
-    centers <- data.frame(
-      name = c("Greifswald","Dresden","Leipzig","Aachen","Hannover","Hamburg","Berlin"),
-      lat  = c(54.093,51.050,51.339,50.775,52.374,53.550,52.520),
-      lng  = c(13.387,13.738,12.374,6.083,9.738,9.993,13.405),
-      stringsAsFactors = FALSE
-    )
-    germany <- geodata::gadm("Germany", level = 0, path = tempdir())
-    leaflet() %>%
-      addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
-      addPolygons(data = germany, color = "#333333", weight = 1, fill = FALSE) %>%
-      setView(lng = 10.5, lat = 51.0, zoom = 6) %>%
-      addCircleMarkers(data = centers, lat = ~lat, lng = ~lng,
-                       label = ~name, radius = 6, fill = TRUE, fillOpacity = 0.9)
-  })
+  #output$map <- renderLeaflet({
+  #  centers <- data.frame(
+  #    name = c("Greifswald","Dresden","Leipzig","Aachen","Hannover","Hamburg","Berlin"),
+  #    lat  = c(54.093,51.050,51.339,50.775,52.374,53.550,52.520),
+  #    lng  = c(13.387,13.738,12.374,6.083,9.738,9.993,13.405),
+  #    stringsAsFactors = FALSE
+  #  )
+  #  germany <- geodata::gadm("Germany", level = 0, path = tempdir())
+  #  leaflet() %>%
+  #    addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+  #    addPolygons(data = germany, color = "#333333", weight = 1, fill = FALSE) %>%
+  #    setView(lng = 10.5, lat = 51.0, zoom = 6) %>%
+  #    addCircleMarkers(data = centers, lat = ~lat, lng = ~lng,
+  #                     label = ~name, radius = 6, fill = TRUE, fillOpacity = 0.9)
+  #})
 
   # 4.13 Draggable mini‐plots
   output$plotsUI <- renderUI({
