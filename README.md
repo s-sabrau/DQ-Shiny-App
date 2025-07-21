@@ -5,13 +5,11 @@ Date: January 8, 2025
 Contact: sarah.braun@med.uni-greifswald.de
 
 ## Description
-
 The Interactive Medical Data App is a modular R Shiny dashboard for uploading,visualizing, and exporting heterogeneous medical datasets.
 It supports CSV, JSON, and HL7 FHIR® data sources, enabling rapid and interactive exploration of data distributions, quality, and category overlaps. The app is designed for clinical research, IT, and medical data integration projects.
 
 
 ## Features
-
 ### Flexible Data Import:
 
 - Upload multiple CSV/JSON files
@@ -33,7 +31,6 @@ It supports CSV, JSON, and HL7 FHIR® data sources, enabling rapid and interacti
 
 
 ## Prerequisites
-
 R (version ≥ 4.2)
 OS: Linux, macOS, or Windows
 R Packages: Installed automatically on app startup:
@@ -59,9 +56,7 @@ shiny::runApp("aktuelle App.R")
 
 
 ### Quick Start:
-
 #### Data Upload:
-
 Select "File (CSV/JSON)" or "FHIR (HAPI Test Server)" as data source
 For custom CSVs, map columns to 'Category' and 'Count' as prompted.
 
@@ -77,7 +72,6 @@ Export combined/intersection results as JSON.
 View dataset metrics and category overlap
 
 ## Troubleshooting
-
 #### Missing R Packages:
 App installs missing dependencies automatically.
 If installation fails, check your internet connection and CRAN mirrors.
@@ -110,7 +104,6 @@ Modular plotting with ggplot2 and leaflet.
 
 
 ## Citation
-
 If you use this app in your research or project, please cite as:
 
 Braun S., Draeger C., Michaelis L., Freiesleben S., Waltemath D., Löbe M., Wodke J. (2025).
