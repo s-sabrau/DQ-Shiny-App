@@ -41,30 +41,80 @@ ui <- fluidPage(
   # Custom CSS & JS
   tags$head(
     tags$style(HTML("
-      .plot_box {
-        width: 300px;
-        padding: 15px;
-        border: 1px solid #B0B0B0;
-        border-radius: 8px;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        background-color: transparent;
-        position: absolute;
-      }
-    ")),
+    .plot_box {
+      width: 300px;
+      padding: 15px;
+      border: 1px solid #B0B0B0;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+      background-color: transparent;
+      position: absolute;
+    }
+
+    #plot_area {
+      position: relative;
+      height: 800px;
+      border: 1px solid #DDD;
+      overflow: auto;
+      padding: 10px;
+    }
+  ")),
     tags$script(HTML("
-      // Stack all plots
-      $(document).on('click','#stackPlots',function(){
-        $('.plot_box').css({top:'0px',left:'0px'});
-      });
-      // Stack selected plots
-      $(document).on('click','#stackSelectedPlots',function(){
-        var sel = $('#selectedPlotsToStack').val()||[];
-        sel.slice(0,2).forEach(function(name){
-          $('.plot_box[data-plot-name=\"'+name+'\"]')
-            .css({top:'0px',left:'0px'});
+    // Function to arrange plots side by side
+    function arrangeSideBySide() {
+      var plots = $('.plot_box');
+      var containerWidth = $('#plot_area').width() - 20; // Account for padding
+      var plotWidth = 320; // 300px + padding + border
+      var plotHeight = 350; // Approximate height including padding
+      var plotsPerRow = Math.floor(containerWidth / plotWidth);
+
+      plots.each(function(index) {
+        var row = Math.floor(index / plotsPerRow);
+        var col = index % plotsPerRow;
+        var left = col * plotWidth;
+        var top = row * plotHeight;
+
+        $(this).css({
+          top: top + 'px',
+          left: left + 'px'
         });
       });
-    "))
+    }
+
+    // Initialize side-by-side layout when plots are added
+    $(document).on('DOMNodeInserted', '#plot_area', function() {
+      setTimeout(arrangeSideBySide, 100);
+    });
+
+    // Re-arrange on window resize
+    $(window).resize(function() {
+      setTimeout(arrangeSideBySide, 100);
+    });
+
+    // Stack all plots
+    $(document).on('click','#stackPlots',function(){
+      $('.plot_box').css({top:'0px',left:'0px'});
+    });
+
+    // Arrange plots side by side
+    $(document).on('click','#arrangeSideBySide',function(){
+      arrangeSideBySide();
+    });
+
+    // Stack selected plots
+    $(document).on('click','#stackSelectedPlots',function(){
+      var sel = $('#selectedPlotsToStack').val()||[];
+      sel.slice(0,2).forEach(function(name){
+        $('.plot_box[data-plot-name=\"'+name+'\"]')
+          .css({top:'0px',left:'0px'});
+      });
+    });
+
+    // Initialize side-by-side layout on page load
+    $(document).ready(function() {
+      setTimeout(arrangeSideBySide, 500);
+    });
+  "))
   ),
 
   navbarPage("Medical Data Dashboard",
@@ -87,17 +137,25 @@ ui <- fluidPage(
                           conditionalPanel(
                             "input.data_source=='fhir'",
                             h4("FHIR Settings"),
-                            textInput("fhir_url", "Server URL:",
-                                      value = "http://hapi.fhir.org/baseR4"),
-                            numericInput("max_bundles", "Max Bundles:",
-                                         value = 10, min = 1, step = 1),
-                            actionButton("load_fhir", "Load FHIR Data"),
+                            radioButtons("fhir_input_type", "FHIR Input Type:",
+                                         choices = c("API Request" = "api", "File Upload" = "file"),
+                                         selected = "api"),
+                            conditionalPanel(
+                              "input.fhir_input_type=='api'",
+                              textInput("fhir_url", "Server URL:",
+                                        value = "http://hapi.fhir.org/baseR4"),
+                              numericInput("max_bundles", "Max Bundles:",
+                                           value = 10, min = 1, step = 1),
+                              actionButton("load_fhir", "Load FHIR Data")
+                            ),
+                            conditionalPanel(
+                              "input.fhir_input_type=='file'",
+                              fileInput("fhirFiles", "Select FHIR JSON Files",
+                                        accept = c(".json"), multiple = TRUE)
+                            ),
                             uiOutput("fhirResourceTypeUI"),
                             uiOutput("fhirMappingUI")
-                          ),
-                          #br(),
-                          #h4("Data Integration Centers (Germany)"),
-                          #leafletOutput("map", height = "400px")
+                          )
                         ),
                         mainPanel(
                           h4("Uploaded / Loaded Datasets"),
@@ -110,15 +168,21 @@ ui <- fluidPage(
              tabPanel("Visualization",
                       fluidRow(
                         column(12,
-                               actionButton("stackPlots", "Stack All Plots"),
-                               br(), br(),
-                               selectInput("selectedPlotsToStack",
-                                           "Select Two Plots to Stack:", choices = NULL, multiple = TRUE),
-                               actionButton("stackSelectedPlots", "Stack Selected Plots"),
-                               br(), br(),
+                               div(style = "margin-bottom: 15px;",
+                                   actionButton("arrangeSideBySide", "Arrange Side by Side",
+                                                class = "btn btn-primary"),
+                                   actionButton("stackPlots", "Stack All Plots",
+                                                class = "btn btn-secondary"),
+                                   br(), br(),
+                                   selectInput("selectedPlotsToStack",
+                                               "Select Two Plots to Stack:", choices = NULL, multiple = TRUE,
+                                               width = "300px"),
+                                   actionButton("stackSelectedPlots", "Stack Selected Plots",
+                                                class = "btn btn-info")
+                               ),
                                div(
                                  id = "plot_area",
-                                 style = "position:relative; height:800px; border:1px solid #DDD; overflow:hidden;",
+                                 style = "position:relative; height:800px; border:1px solid #DDD; overflow:auto; padding:10px;",
                                  uiOutput("plotsUI")
                                )
                         )
@@ -173,11 +237,8 @@ ui <- fluidPage(
                       )
              )
 
-  )  # navbarPage
-
-)  # fluidPage
-
-# 4. Server logic
+  ) # navbarPage
+) # fluidPage  # 4. Server logic
 server <- function(input, output, session) {
 
   # 4.1 Load JSON data
@@ -243,6 +304,176 @@ server <- function(input, output, session) {
     })
   }
 
+  # 4.3 load FHIR files
+
+  loadFhirFile <- function(path, filename) {
+    tryCatch({
+      fhir_data <- fromJSON(path, simplifyVector = FALSE)
+
+      # Helper function to safely flatten any FHIR resource
+      flatten_fhir_resource <- function(resource, prefix = "") {
+        result <- list()
+
+        if (is.list(resource)) {
+          for (name in names(resource)) {
+            value <- resource[[name]]
+            current_key <- if (prefix == "") name else paste(prefix, name, sep = ".")
+
+            if (is.null(value)) {
+              result[[current_key]] <- NA_character_
+            } else if (is.list(value) && !is.null(names(value))) {
+              # Named list - recurse
+              nested_result <- flatten_fhir_resource(value, current_key)
+              result <- c(result, nested_result)
+            } else if (is.list(value)) {
+              # Unnamed list (array) - convert to delimited string
+              if (length(value) > 0) {
+                array_strings <- sapply(value, function(item) {
+                  if (is.list(item)) {
+                    if (!is.null(item$value)) {
+                      return(as.character(item$value))
+                    } else if (!is.null(item$display)) {
+                      return(as.character(item$display))
+                    } else if (!is.null(item$code)) {
+                      return(as.character(item$code))
+                    } else if (!is.null(item$system)) {
+                      return(paste0(item$system, ":", item$code %||% ""))
+                    } else {
+                      non_null_values <- item[!sapply(item, is.null)]
+                      if (length(non_null_values) > 0) {
+                        key_value_pairs <- paste(names(non_null_values),
+                                                 sapply(non_null_values, as.character),
+                                                 sep = ":", collapse = ",")
+                        return(paste0("{", key_value_pairs, "}"))
+                      } else {
+                        return("")
+                      }
+                    }
+                  } else {
+                    return(as.character(item))
+                  }
+                })
+                result[[current_key]] <- paste(array_strings[array_strings != ""], collapse = "; ")
+              } else {
+                result[[current_key]] <- NA_character_
+              }
+            } else if (length(value) > 1) {
+              result[[current_key]] <- paste(as.character(value), collapse = "; ")
+            } else {
+              result[[current_key]] <- as.character(value)
+            }
+          }
+        } else {
+          key <- if (prefix == "") "value" else prefix
+          result[[key]] <- as.character(resource)
+        }
+
+        return(result)
+      }
+
+      # Handle both single resources and bundles
+      if (is.list(fhir_data) && !is.null(fhir_data$resourceType)) {
+        if (fhir_data$resourceType == "Bundle" && !is.null(fhir_data$entry)) {
+          # Extract resources and group by type
+          resources_by_type <- list()
+
+          for (i in seq_along(fhir_data$entry)) {
+            entry <- fhir_data$entry[[i]]
+            if (is.list(entry) && !is.null(entry$resource) &&
+                is.list(entry$resource) && !is.null(entry$resource$resourceType)) {
+
+              resource <- entry$resource
+              resource_type <- tolower(as.character(resource$resourceType))
+
+              # Initialize list for this resource type if needed
+              if (is.null(resources_by_type[[resource_type]])) {
+                resources_by_type[[resource_type]] <- list()
+              }
+
+              # Add resource to appropriate type group
+              resources_by_type[[resource_type]][[length(resources_by_type[[resource_type]]) + 1]] <- resource
+            }
+          }
+
+          # Create separate data frame for each resource type
+          result_list <- list()
+
+          for (resource_type in names(resources_by_type)) {
+            resources <- resources_by_type[[resource_type]]
+            df_list <- list()
+
+            for (i in seq_along(resources)) {
+              resource <- resources[[i]]
+
+              # Flatten the resource
+              flattened <- flatten_fhir_resource(resource)
+
+              # Add resource type prefix to all column names
+              if (length(flattened) > 0) {
+                prefixed_flattened <- list()
+                for (col_name in names(flattened)) {
+                  prefixed_name <- paste(resource_type, col_name, sep = ".")
+                  prefixed_flattened[[prefixed_name]] <- flattened[[col_name]]
+                }
+                flattened <- prefixed_flattened
+              }
+
+              # Create data frame for this resource
+              if (length(flattened) > 0) {
+                flattened <- lapply(flattened, function(x) {
+                  if (is.null(x) || length(x) == 0) {
+                    return(NA_character_)
+                  } else {
+                    return(as.character(x))
+                  }
+                })
+
+                df_list[[i]] <- data.frame(flattened, stringsAsFactors = FALSE, check.names = FALSE)
+              }
+            }
+
+            # Combine all resources of this type
+            if (length(df_list) > 0) {
+              df_list <- Filter(function(x) !is.null(x) && nrow(x) > 0, df_list)
+
+              if (length(df_list) > 0) {
+                # Standardize columns
+                all_cols <- unique(unlist(lapply(df_list, names)))
+                df_list <- lapply(df_list, function(df) {
+                  missing_cols <- setdiff(all_cols, names(df))
+                  for (col in missing_cols) {
+                    df[[col]] <- NA_character_
+                  }
+                  return(df[, all_cols, drop = FALSE])
+                })
+
+                result_df <- do.call(rbind, df_list)
+                rownames(result_df) <- NULL
+
+                # Store with resource type key
+                result_list[[paste0(filename, "_", resource_type)]] <- result_df
+              }
+            }
+          }
+
+          return(result_list)
+        }
+      }
+
+      # Return empty list if no valid data found
+      return(list())
+
+    }, error = function(e) {
+      warning(paste("Error loading FHIR file", filename, ":", e$message))
+      return(list())
+    })
+  }
+
+  # Helper function for null coalescing
+  `%||%` <- function(x, y) {
+    if (is.null(x) || length(x) == 0) y else x
+  }
+
   # 4.3.1 Dynamic UI: mapping CSV columns
   output$mappingUI <- renderUI({
     req(input$dataFiles)
@@ -251,13 +482,44 @@ server <- function(input, output, session) {
     uiList <- lapply(seq_along(fps), function(i) {
       if (tools::file_ext(fns[i]) == "csv") {
         df0 <- read.csv(fps[i], stringsAsFactors = FALSE)
+
+        # Sort column names - group by resource type prefix, then alphabetically
+        col_names <- colnames(df0)
+
+        # Separate columns with resource type prefixes from those without
+        prefixed_cols <- col_names[grepl("\\.", col_names)]
+        non_prefixed_cols <- col_names[!grepl("\\.", col_names)]
+
+        if (length(prefixed_cols) > 0) {
+          # Group prefixed columns by resource type
+          resource_groups <- split(prefixed_cols, sapply(prefixed_cols, function(x) {
+            strsplit(x, "\\.")[[1]][1]
+          }))
+
+          # Sort resource types alphabetically, then sort columns within each group
+          sorted_prefixed <- unlist(lapply(sort(names(resource_groups)), function(res_type) {
+            cols <- resource_groups[[res_type]]
+            # Put basic fields first (resourceType, id, meta.*), then sort the rest
+            basic_pattern <- paste0("^", res_type, "\\.(resourceType|id|meta\\.)")
+            basic_cols <- cols[grepl(basic_pattern, cols)]
+            other_cols <- cols[!grepl(basic_pattern, cols)]
+            c(sort(basic_cols), sort(other_cols))
+          }))
+
+          # Combine: non-prefixed first (sorted), then prefixed (grouped and sorted)
+          sorted_cols <- c(sort(non_prefixed_cols), sorted_prefixed)
+        } else {
+          # No prefixed columns, just sort normally
+          sorted_cols <- sort(col_names)
+        }
+
         #if (!all(c("Category","Count") %in% colnames(df0))) {
         tagList(
           h4(paste("Map columns for", fns[i])),
           selectInput(paste0("map_cat_", i),
-                      "Category column:", choices = colnames(df0)),
+                      "Category column:", choices = sorted_cols),
           #selectInput(paste0("map_cnt_", i),
-          #            "Count column:",    choices = colnames(df0))
+          #            "Count column:",    choices = sorted_cols)
         )
         #}
       }
@@ -265,166 +527,198 @@ server <- function(input, output, session) {
     do.call(tagList, uiList)
   })
 
-  # 4.3.2 Dynamic UI: mapping FHIR categories
-  output$fhirMappingUI <- renderUI({
-    req(input$data_source == "fhir")
-    if (!is.null(fhirRawData())) {  # Changed from fhirColumns()
-      selectInput("fhir_category_col", "Category column:",
-                  choices = colnames(fhirRawData()),
-                  selected = colnames(fhirRawData())[1])  # Auto-select first column
-    }
-  })
-
   # 4.4a Fetch comprehensive FHIR data using _include and _revinclude
 
   # Replace the fhirRawData function with this corrected version:
 
-  fhirRawData <- eventReactive(input$load_fhir, {
-    req(input$fhir_url, input$max_bundles)
+  fhirRawData <- reactive({
+    if (input$data_source == "fhir") {
+      if (input$fhir_input_type == "api") {
+        # Existing API logic - wrap in eventReactive
+        req(input$load_fhir)
+        req(input$fhir_url, input$max_bundles)
 
-    showNotification("Starting FHIR data load...", type = "default", id = "fhir_load")
+        showNotification("Starting FHIR data load...", type = "default", id = "fhir_load")
 
-    all_resources <- list()
+        all_resources <- list()
 
-    # List of resource types to try fetching
-    resource_types_to_fetch <- c("Patient", "Observation", "Condition", "MedicationRequest",
-                                 "Procedure", "Encounter", "AllergyIntolerance", "Immunization")
+        resource_types_to_fetch <- c("Patient", "Observation", "Condition", "MedicationRequest",
+                                     "Procedure", "Encounter", "AllergyIntolerance", "Immunization")
 
-    for (resource_type in resource_types_to_fetch) {
-      print(paste("=== Fetching", resource_type, "==="))
+        for (resource_type in resource_types_to_fetch) {
+          tryCatch({
+            req_resource <- fhir_url(url = input$fhir_url, resource = resource_type)
 
-      tryCatch({
-        req_resource <- fhir_url(url = input$fhir_url, resource = resource_type)
+            bundles <- fhir_search(
+              request = req_resource,
+              verbose = 0,
+              max_bundles = input$max_bundles
+            )
 
-        # Fetch bundles for this resource type
-        bundles <- fhir_search(
-          request = req_resource,
-          verbose = 0,
-          max_bundles = input$max_bundles
-        )
+            if (length(bundles) > 0) {
+              desc <- fhir_table_description(
+                resource = resource_type,
+                sep = " || ",
+                brackets = character(0),
+                rm_empty_cols = FALSE,
+                format = "compact"
+              )
 
-        if (length(bundles) > 0) {
-          # Create table description
-          desc <- fhir_table_description(
-            resource = resource_type,
-            sep = " || ",
-            brackets = character(0),
-            rm_empty_cols = FALSE,
-            format = "compact"
-          )
+              df <- fhir_crack(bundles = bundles, design = desc, verbose = 0)
 
-          # Crack the data
-          df <- fhir_crack(bundles = bundles, design = desc, verbose = 0)
+              if (!is.null(df) && nrow(df) > 0) {
+                all_resources[[resource_type]] <- df
+              }
+            }
+          }, error = function(e) {
+            print(paste("Error fetching", resource_type, ":", e$message))
+          })
+        }
 
-          if (!is.null(df) && nrow(df) > 0) {
-            all_resources[[resource_type]] <- df
-            print(paste("Successfully extracted", nrow(df), resource_type, "records"))
+        removeNotification("fhir_load")
+
+        if (length(all_resources) > 0) {
+          showNotification(paste("Loaded", length(all_resources), "resource types"), type = "default")
+        } else {
+          showNotification("No data could be loaded", type = "error")
+        }
+
+        return(all_resources)
+
+      } else if (input$fhir_input_type == "file") {
+        # File upload logic
+        req(input$fhirFiles)
+
+        all_files_data <- list()
+        fps <- input$fhirFiles$datapath
+        fns <- input$fhirFiles$name
+
+        for (i in seq_along(fps)) {
+          file_data_list <- loadFhirFile(fps[i], fns[i])  # Now returns list of resource types
+          if (!is.null(file_data_list) && length(file_data_list) > 0) {
+            # Merge all resource types from this file into main list
+            all_files_data <- c(all_files_data, file_data_list)
           }
         }
-      }, error = function(e) {
-        print(paste("Error fetching", resource_type, ":", e$message))
-      })
+
+        return(all_files_data)
+      }
     }
-
-    removeNotification("fhir_load")
-
-    if (length(all_resources) > 0) {
-      showNotification(paste("Loaded", length(all_resources), "resource types"), type = "default")
-    } else {
-      showNotification("No data could be loaded", type = "error")
-    }
-
-    print("=== Summary ===")
-    print(paste("Total resource types loaded:", length(all_resources)))
-    for (rt in names(all_resources)) {
-      print(paste("  ", rt, ":", nrow(all_resources[[rt]]), "rows"))
-    }
-
-    all_resources
+    return(NULL)
   })
 
   # 4.4b UI for selecting resource type to visualize
   output$fhirResourceTypeUI <- renderUI({
-    req(fhirRawData())
-    available_resources <- names(fhirRawData())
+    if (input$data_source == "fhir") {
+      fhir_data <- fhirRawData()
+      if (!is.null(fhir_data)) {
+        available_resources <- names(fhir_data)
 
-    if (length(available_resources) > 0) {
-      selectInput("fhir_resource_to_viz", "Resource Type to Visualize:",
-                  choices = available_resources,
-                  selected = available_resources[1])
+        if (length(available_resources) > 0) {
+          if (input$fhir_input_type == "api") {
+            selectInput("fhir_resource_to_viz", "Resource Type to Visualize:",
+                        choices = available_resources,
+                        selected = available_resources[1])
+          } else {
+            # For file uploads, show info about available resource types
+            resource_types <- unique(sapply(available_resources, function(x) {
+              parts <- strsplit(x, "_")[[1]]
+              if (length(parts) > 1) parts[length(parts)] else x
+            }))
+            tags$div(
+              h5("Available Resource Types:"),
+              tags$ul(lapply(resource_types, function(x) tags$li(x)))
+            )
+          }
+        }
+      }
     }
   })
 
   # 4.4c Update the mapping UI to show columns from selected resource
   output$fhirMappingUI <- renderUI({
-    req(input$data_source == "fhir")
-    req(fhirRawData())
-    req(input$fhir_resource_to_viz)
+    if (input$data_source == "fhir") {
+      fhir_data <- fhirRawData()
+      if (!is.null(fhir_data)) {
+        if (input$fhir_input_type == "api") {
+          req(input$fhir_resource_to_viz)
+          df <- fhir_data[[input$fhir_resource_to_viz]]
+          if (!is.null(df) && nrow(df) > 0) {
+            selectInput("fhir_category_col", "Category column:",
+                        choices = colnames(df),
+                        selected = colnames(df)[1])
+          }
+        } else {
+          # For file uploads, get all unique columns across all datasets
+          all_columns <- unique(unlist(lapply(fhir_data, colnames)))
+          if (length(all_columns) > 0) {
+            # Sort columns by resource type prefix
+            prefixed_cols <- all_columns[grepl("\\.", all_columns)]
+            non_prefixed_cols <- all_columns[!grepl("\\.", all_columns)]
 
-    df <- fhirRawData()[[input$fhir_resource_to_viz]]
-    if (!is.null(df) && nrow(df) > 0) {
-      selectInput("fhir_category_col", "Category column:",
-                  choices = colnames(df),
-                  selected = colnames(df)[1])
+            if (length(prefixed_cols) > 0) {
+              resource_groups <- split(prefixed_cols, sapply(prefixed_cols, function(x) {
+                strsplit(x, "\\.")[[1]][1]
+              }))
+
+              sorted_prefixed <- unlist(lapply(sort(names(resource_groups)), function(res_type) {
+                cols <- resource_groups[[res_type]]
+                basic_pattern <- paste0("^", res_type, "\\.(resourceType|id|meta\\.)")
+                basic_cols <- cols[grepl(basic_pattern, cols)]
+                other_cols <- cols[!grepl(basic_pattern, cols)]
+                c(sort(basic_cols), sort(other_cols))
+              }))
+
+              sorted_cols <- c(sort(non_prefixed_cols), sorted_prefixed)
+            } else {
+              sorted_cols <- sort(all_columns)
+            }
+
+            selectInput("fhir_category_col", "Category column:",
+                        choices = sorted_cols,
+                        selected = sorted_cols[1])
+          }
+        }
+      }
     }
   })
 
-  # 4.4d Process FHIR data based on selected resource and category
-  fhirSummary <- reactive({
-    req(fhirRawData())
-    req(input$fhir_resource_to_viz)
-    req(input$fhir_category_col)
 
-    # Get the selected resource data
-    df <- fhirRawData()[[input$fhir_resource_to_viz]]
-    req(df)
-
-    category_col <- input$fhir_category_col
-
-    # Check if the column exists in the current resource type
-    if (!category_col %in% colnames(df)) {
-      # Column doesn't exist in this resource type
-      # Return empty data frame with proper structure
-      return(data.frame(Category = character(), Count = numeric(), stringsAsFactors = FALSE))
-    }
-
-    # Handle NA values
-    df[[category_col]] <- ifelse(is.na(df[[category_col]]), "unknown", df[[category_col]])
-
-    # Count occurrences
-    result <- df %>%
-      count(Category = .data[[category_col]], name = "Count") %>%
-      as.data.frame(stringsAsFactors = FALSE)
-
-    result
-  })
 
   # Also update the fhirMappingUI to reset when resource type changes:
   output$fhirMappingUI <- renderUI({
-    req(input$data_source == "fhir")
-    req(fhirRawData())
-    req(input$fhir_resource_to_viz)
-
-    df <- fhirRawData()[[input$fhir_resource_to_viz]]
-    if (!is.null(df) && nrow(df) > 0) {
-      # Get columns for the currently selected resource type
-      cols <- colnames(df)
-
-      # Create the select input
-      selectInput("fhir_category_col", "Category column:",
-                  choices = cols,
-                  selected = cols[1])
+    if (input$data_source == "fhir") {
+      fhir_data <- fhirRawData()
+      if (!is.null(fhir_data)) {
+        if (input$fhir_input_type == "api") {
+          req(input$fhir_resource_to_viz)
+          df <- fhir_data[[input$fhir_resource_to_viz]]
+          if (!is.null(df) && nrow(df) > 0) {
+            selectInput("fhir_category_col", "Category column:",
+                        choices = colnames(df),
+                        selected = colnames(df)[1])
+          }
+        } else {
+          # For file uploads, get all unique columns across all resources
+          all_columns <- unique(unlist(lapply(fhir_data, colnames)))
+          if (length(all_columns) > 0) {
+            selectInput("fhir_category_col", "Category column:",
+                        choices = all_columns,
+                        selected = all_columns[1])
+          }
+        }
+      }
     }
   })
 
   # 4.5 Aggregate uploaded/FHIR datasets
   allData <- reactive({
     if (input$data_source == "file") {
+      # Existing file logic unchanged
       req(input$dataFiles)
       fps <- input$dataFiles$datapath
       fns <- input$dataFiles$name
 
-      # Process each file and filter out NULL results
       results <- lapply(seq_along(fps), function(i) {
         ext <- tools::file_ext(fns[i])
 
@@ -439,7 +733,6 @@ server <- function(input, output, session) {
           NULL
         })
 
-        # Only return if we got valid data
         if (!is.null(df) && nrow(df) > 0) {
           list(name = fns[i], data = df)
         } else {
@@ -447,25 +740,73 @@ server <- function(input, output, session) {
         }
       })
 
-      # Remove NULL entries
       results[!sapply(results, is.null)]
 
-    } else {
-      # FHIR data source handling (unchanged)
-      if (!is.null(fhirRawData()) &&
-          !is.null(input$fhir_resource_to_viz) &&
-          !is.null(input$fhir_category_col)) {
-        df <- fhirSummary()
-        if (!is.null(df) && nrow(df) > 0) {
-          resource_name <- paste0("FHIR-", input$fhir_resource_to_viz, ":", input$fhir_url)
-          list(list(name = resource_name, data = df))
+    } else if (input$data_source == "fhir") {
+      # FHIR data source handling
+      fhir_data <- fhirRawData()
+      if (!is.null(fhir_data) && length(fhir_data) > 0) {
+        results <- list()
+
+        if (input$fhir_input_type == "file") {
+          # For file uploads, each dataset creates one entry
+          req(input$fhir_category_col)
+
+          for (dataset_key in names(fhir_data)) {
+            df <- fhir_data[[dataset_key]]
+            category_col <- input$fhir_category_col
+
+            # ONLY process datasets that actually have the selected column
+            if (category_col %in% colnames(df)) {
+              cat("Processing dataset:", dataset_key, "\n")
+              cat("  Rows in dataset:", nrow(df), "\n")
+              cat("  Looking for column:", category_col, "\n")
+
+              df[[category_col]] <- ifelse(is.na(df[[category_col]]) | df[[category_col]] == "", "unknown", as.character(df[[category_col]]))
+
+              result_df <- df %>%
+                count(Category = .data[[category_col]], name = "Count") %>%
+                as.data.frame(stringsAsFactors = FALSE)
+
+              if (nrow(result_df) > 0) {
+                cat("  Created result with", nrow(result_df), "categories\n")
+                results[[length(results) + 1]] <- list(name = dataset_key, data = result_df)
+              }
+            } else {
+              cat("Skipping dataset:", dataset_key, "(column not found)\n")
+            }
+          }
         } else {
-          list()
+          # API logic - single combined dataset
+          if (!is.null(input$fhir_resource_to_viz) &&
+              !is.null(input$fhir_category_col)) {
+
+            resource_key <- input$fhir_resource_to_viz
+            if (resource_key %in% names(fhir_data)) {
+              df <- fhir_data[[resource_key]]
+              category_col <- input$fhir_category_col
+
+              if (category_col %in% colnames(df)) {
+                df[[category_col]] <- ifelse(is.na(df[[category_col]]), "unknown", df[[category_col]])
+
+                result_df <- df %>%
+                  count(Category = .data[[category_col]], name = "Count") %>%
+                  as.data.frame(stringsAsFactors = FALSE)
+
+                if (nrow(result_df) > 0) {
+                  resource_name <- paste0("FHIR-", input$fhir_resource_to_viz, ":", input$fhir_url)
+                  results[[length(results) + 1]] <- list(name = resource_name, data = result_df)
+                }
+              }
+            }
+          }
         }
-      } else {
-        list()
+
+        return(results)
       }
     }
+
+    return(list())
   })
 
   # 4.6 Global maximum for shared y-axis
@@ -712,43 +1053,52 @@ server <- function(input, output, session) {
   observe({
     req(allData())
     dl <- allData()
+
+    # Use local() to create proper closures for each iteration
     for (i in seq_along(dl)) {
-      ui_name   <- paste0("plotUI_", i)
-      plot_name <- paste0("plot_", i)
-      enabled   <- input[[paste0("cb_", i)]]
-      chart     <- input[[paste0("pt_", i)]]
-      filterCat <- input[[paste0("filter_", i)]]
-      alpha     <- input[[paste0("op_", i)]]
-      data0     <- dl[[i]]$data
+      local({
+        idx <- i
+        f <- dl[[idx]]
 
-      output[[ui_name]] <- renderUI({
-        if (isTRUE(enabled)) plotOutput(plot_name, height = "300px")
+        ui_name   <- paste0("plotUI_", idx)
+        plot_name <- paste0("plot_", idx)
+
+        output[[ui_name]] <- renderUI({
+          enabled <- input[[paste0("cb_", idx)]]
+          if (isTRUE(enabled)) plotOutput(plot_name, height = "300px")
+        })
+
+        output[[plot_name]] <- renderPlot({
+          enabled <- input[[paste0("cb_", idx)]]
+          chart     <- input[[paste0("pt_", idx)]]
+          filterCat <- input[[paste0("filter_", idx)]]
+          alpha     <- input[[paste0("op_", idx)]]
+          data0     <- f$data  # Now this is captured in the local scope
+
+          df0 <- if (!is.null(filterCat) && length(filterCat) > 0) {
+            data0[data0$Category %in% filterCat, ]
+          } else data0
+
+          p_base <- ggplot(df0, aes(x = Category, y = Count, fill = Category)) +
+            theme_minimal(base_size = 14) +
+            scale_y_continuous(limits = c(0, globalMax()))
+
+          p <- switch(chart,
+                      "Histogram" = p_base + geom_bar(stat = "identity", alpha = alpha),
+                      "Pie Chart" = ggplot(df0, aes(x = "", y = Count, fill = Category)) +
+                        geom_bar(stat = "identity", alpha = alpha, width = 1) +
+                        coord_polar("y", start = 0),
+                      "Line Chart" = ggplot(df0, aes(x = Category, y = Count, group = 1)) +
+                        geom_line(size = 1.2, alpha = alpha) +
+                        geom_point(size = 3, alpha = alpha)
+          )
+
+          p + labs(title = f$name, x = "Category", y = "Count") +
+            theme(panel.background = element_rect(fill = "transparent", colour = NA),
+                  plot.background  = element_rect(fill = "transparent", colour = NA),
+                  panel.grid       = element_blank())
+        }, bg = "transparent")
       })
-
-      output[[plot_name]] <- renderPlot({
-        df0 <- if (!is.null(filterCat) && length(filterCat) > 0) {
-          data0[data0$Category %in% filterCat, ]
-        } else data0
-
-        p_base <- ggplot(df0, aes(x = Category, y = Count, fill = Category)) +
-          theme_minimal(base_size = 14) +
-          scale_y_continuous(limits = c(0, globalMax()))
-
-        p <- switch(chart,
-                    "Histogram" = p_base + geom_bar(stat = "identity", alpha = alpha),
-                    "Pie Chart" = ggplot(df0, aes(x = "", y = Count, fill = Category)) +
-                      geom_bar(stat = "identity", alpha = alpha, width = 1) +
-                      coord_polar("y", start = 0),
-                    "Line Chart" = ggplot(df0, aes(x = Category, y = Count, group = 1)) +
-                      geom_line(size = 1.2, alpha = alpha) +
-                      geom_point(size = 3, alpha = alpha)
-        )
-
-        p + labs(title = dl[[i]]$name, x = "Category", y = "Count") +
-          theme(panel.background = element_rect(fill = "transparent", colour = NA),
-                plot.background  = element_rect(fill = "transparent", colour = NA),
-                panel.grid       = element_blank())
-      }, bg = "transparent")
     }
   })
 
@@ -790,4 +1140,3 @@ server <- function(input, output, session) {
 
 # 5. Launch the application
 shinyApp(ui = ui, server = server)
-
