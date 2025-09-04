@@ -1044,7 +1044,11 @@ server <- function(input, output, session) {
                         c("Histogram", "Pie Chart", "Line Chart")),
             uiOutput(paste0("plotUI_", safe_i)),
             sliderInput(paste0("op_", safe_i), "Transparency:",
-                        min = 0.1, max = 1, value = 1, step = 0.1)
+                        min = 0.1, max = 1, value = 1, step = 0.1),
+            # ADD THIS DOWNLOAD BUTTON:
+            downloadButton(paste0("download_", safe_i), "Export JSON",
+                           class = "btn btn-sm btn-outline-secondary",
+                           style = "width: 100%; margin-top: 10px;")
         )
       )
     }))
@@ -1136,7 +1140,56 @@ server <- function(input, output, session) {
     HTML(paste0(html, '</table>'))
   })
 
-}  # end server
+  # 4.15 Individual plot download handlers
+  observe({
+    req(allData())
+    dl <- allData()
+
+    for (i in seq_along(dl)) {
+      local({
+        idx <- i
+        f <- dl[[idx]]
+
+        output[[paste0("download_", idx)]] <- downloadHandler(
+          filename = function() {
+            # Create safe filename from dataset name
+            safe_name <- make_safe_id(f$name)
+            category_col <- input$fhir_category_col
+            safe_category <- make_safe_id(category_col)
+            paste0(safe_name, "_", safe_category, "_", Sys.Date(), ".json")
+          },
+          content = function(file) {
+            # Get the current filtered data (same logic as plot)
+            filterCat <- input[[paste0("filter_", idx)]]
+
+            export_data <- if (!is.null(filterCat) && length(filterCat) > 0) {
+              f$data[f$data$Category %in% filterCat, ]
+            } else {
+              f$data
+            }
+
+            # Add metadata to the export
+            export_object <- list(
+              metadata = list(
+                dataset_name = f$name,
+                category_column = input$fhir_category_col,
+                export_date = Sys.time(),
+                total_rows = nrow(export_data),
+                filtered = !is.null(filterCat) && length(filterCat) > 0,
+                filter_categories = if (!is.null(filterCat)) filterCat else NULL
+              ),
+              data = export_data
+            )
+
+            jsonlite::write_json(export_object, file, pretty = TRUE, auto_unbox = TRUE)
+          }
+        )
+      })
+    }
+  })
+
+}
+# end server
 
 # 5. Launch the application
 shinyApp(ui = ui, server = server)
