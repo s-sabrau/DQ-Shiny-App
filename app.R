@@ -34,6 +34,18 @@ make_safe_id <- function(x) {
   gsub("^_|_$", "", id)
 }
 
+# Get all unique categories across all datasets for consistent x-axis
+getAllCategories <- function(data_list) {
+  all_cats <- unique(unlist(lapply(data_list, function(x) x$data$Category)))
+  # Sort categories: put "unknown" last, others alphabetically
+  known_cats <- sort(all_cats[all_cats != "unknown"])
+  if ("unknown" %in% all_cats) {
+    c(known_cats, "unknown")
+  } else {
+    known_cats
+  }
+}
+
 # 3. UI definition
 ui <- fluidPage(
   theme = shinytheme("spacelab"),
@@ -42,7 +54,7 @@ ui <- fluidPage(
   tags$head(
     tags$style(HTML("
     .plot_box {
-      width: 300px;
+      min-width: 300px;
       padding: 15px;
       border: 1px solid #B0B0B0;
       border-radius: 8px;
@@ -60,26 +72,61 @@ ui <- fluidPage(
     }
   ")),
     tags$script(HTML("
-    // Function to arrange plots side by side
-    function arrangeSideBySide() {
-      var plots = $('.plot_box');
-      var containerWidth = $('#plot_area').width() - 20; // Account for padding
-      var plotWidth = 320; // 300px + padding + border
-      var plotHeight = 350; // Approximate height including padding
-      var plotsPerRow = Math.floor(containerWidth / plotWidth);
+      // Function to arrange plots side by side with dynamic width
+      function arrangeSideBySide() {
+        var plots = $('.plot_box');
+        var containerWidth = $('#plot_area').width() - 20;
+        var plotHeight = 350;
 
-      plots.each(function(index) {
-        var row = Math.floor(index / plotsPerRow);
-        var col = index % plotsPerRow;
-        var left = col * plotWidth;
-        var top = row * plotHeight;
+        plots.each(function(index) {
+          var $plot = $(this);
 
-        $(this).css({
-          top: top + 'px',
-          left: left + 'px'
+          // Get number of categories from the plot's filter dropdown
+          var plotIndex = $plot.find('select[id^=\"filter_\"]').attr('id');
+          if (plotIndex) {
+            var filterSelect = $('#' + plotIndex);
+            var categoryCount = filterSelect.find('option').length;
+
+            // Calculate width: base 250px + 40px per category, max 800px
+            var plotWidth = Math.min(800, Math.max(250, 250 + (categoryCount * 40)));
+            $plot.css('width', plotWidth + 'px');
+          } else {
+            // Fallback to default width
+            var plotWidth = 300;
+            $plot.css('width', plotWidth + 'px');
+          }
+
+          // Calculate position
+          var currentRowWidth = 0;
+          var currentRow = 0;
+          var plotsInCurrentRow = [];
+
+          // Group plots by rows
+          plots.slice(0, index + 1).each(function(i) {
+            var thisWidth = parseInt($(this).css('width')) + 20; // Add margin
+            if (currentRowWidth + thisWidth > containerWidth && plotsInCurrentRow.length > 0) {
+              currentRow++;
+              currentRowWidth = thisWidth;
+              plotsInCurrentRow = [i];
+            } else {
+              currentRowWidth += thisWidth;
+              plotsInCurrentRow.push(i);
+            }
+          });
+
+          // Position this plot
+          var leftOffset = 0;
+          for (var i = 0; i < plotsInCurrentRow.length; i++) {
+            if (plotsInCurrentRow[i] === index) break;
+            leftOffset += parseInt(plots.eq(plotsInCurrentRow[i]).css('width')) + 20;
+          }
+
+          $plot.css({
+            top: (currentRow * plotHeight) + 'px',
+            left: leftOffset + 'px'
+          });
         });
-      });
-    }
+      }
 
     // Initialize side-by-side layout when plots are added
     $(document).on('DOMNodeInserted', '#plot_area', function() {
@@ -620,14 +667,20 @@ server <- function(input, output, session) {
                         choices = available_resources,
                         selected = available_resources[1])
           } else {
-            # For file uploads, show info about available resource types
+            # For file uploads, add resource type selector
             resource_types <- unique(sapply(available_resources, function(x) {
               parts <- strsplit(x, "_")[[1]]
               if (length(parts) > 1) parts[length(parts)] else x
             }))
-            tags$div(
-              h5("Available Resource Types:"),
-              tags$ul(lapply(resource_types, function(x) tags$li(x)))
+
+            tagList(
+              selectInput("fhir_resource_to_viz", "Resource Type to Visualize:",
+                          choices = resource_types,
+                          selected = resource_types[1]),
+#              tags$div(
+#                h5("Available Datasets:"),
+#                tags$ul(lapply(available_resources, function(x) tags$li(x)))
+              #)
             )
           }
         }
@@ -649,62 +702,45 @@ server <- function(input, output, session) {
                         selected = colnames(df)[1])
           }
         } else {
-          # For file uploads, get all unique columns across all datasets
-          all_columns <- unique(unlist(lapply(fhir_data, colnames)))
-          if (length(all_columns) > 0) {
-            # Sort columns by resource type prefix
-            prefixed_cols <- all_columns[grepl("\\.", all_columns)]
-            non_prefixed_cols <- all_columns[!grepl("\\.", all_columns)]
-
-            if (length(prefixed_cols) > 0) {
-              resource_groups <- split(prefixed_cols, sapply(prefixed_cols, function(x) {
-                strsplit(x, "\\.")[[1]][1]
-              }))
-
-              sorted_prefixed <- unlist(lapply(sort(names(resource_groups)), function(res_type) {
-                cols <- resource_groups[[res_type]]
-                basic_pattern <- paste0("^", res_type, "\\.(resourceType|id|meta\\.)")
-                basic_cols <- cols[grepl(basic_pattern, cols)]
-                other_cols <- cols[!grepl(basic_pattern, cols)]
-                c(sort(basic_cols), sort(other_cols))
-              }))
-
-              sorted_cols <- c(sort(non_prefixed_cols), sorted_prefixed)
-            } else {
-              sorted_cols <- sort(all_columns)
-            }
-
-            selectInput("fhir_category_col", "Category column:",
-                        choices = sorted_cols,
-                        selected = sorted_cols[1])
-          }
-        }
-      }
-    }
-  })
-
-
-
-  # Also update the fhirMappingUI to reset when resource type changes:
-  output$fhirMappingUI <- renderUI({
-    if (input$data_source == "fhir") {
-      fhir_data <- fhirRawData()
-      if (!is.null(fhir_data)) {
-        if (input$fhir_input_type == "api") {
+          # For file uploads, filter columns by selected resource type
           req(input$fhir_resource_to_viz)
-          df <- fhir_data[[input$fhir_resource_to_viz]]
-          if (!is.null(df) && nrow(df) > 0) {
-            selectInput("fhir_category_col", "Category column:",
-                        choices = colnames(df),
-                        selected = colnames(df)[1])
-          }
-        } else {
-          # For file uploads, get all unique columns across all resources
-          all_columns <- unique(unlist(lapply(fhir_data, colnames)))
-          if (length(all_columns) > 0) {
-            selectInput("fhir_category_col", "Category column:",
-                        choices = all_columns,
-                        selected = all_columns[1])
+
+          # Get all datasets that match the selected resource type
+          selected_resource_type <- input$fhir_resource_to_viz
+          matching_datasets <- names(fhir_data)[grepl(paste0("_", selected_resource_type, "$"), names(fhir_data))]
+
+          if (length(matching_datasets) > 0) {
+            # Get columns from all matching datasets
+            all_columns <- unique(unlist(lapply(matching_datasets, function(dataset_name) {
+              colnames(fhir_data[[dataset_name]])
+            })))
+
+            # Filter to only columns that match the selected resource type
+            resource_prefix <- paste0(tolower(selected_resource_type), ".")
+            resource_columns <- all_columns[grepl(paste0("^", resource_prefix), all_columns)]
+
+            if (length(resource_columns) > 0) {
+              # Remove the resource type prefix from display names
+              display_names <- gsub(paste0("^", resource_prefix), "", resource_columns)
+
+              # Sort: basic fields first, then alphabetically
+              basic_fields <- c("resourceType", "id")
+              meta_fields <- display_names[grepl("^meta\\.", display_names)]
+              other_fields <- display_names[!display_names %in% basic_fields & !grepl("^meta\\.", display_names)]
+
+              sorted_display_names <- c(
+                intersect(basic_fields, display_names),
+                sort(meta_fields),
+                sort(other_fields)
+              )
+
+              # Create named vector: display names as labels, full column names as values
+              choices <- setNames(resource_columns[match(sorted_display_names, display_names)], sorted_display_names)
+
+              selectInput("fhir_category_col", "Category column:",
+                          choices = choices,
+                          selected = choices[1])
+            }
           }
         }
       }
@@ -749,19 +785,18 @@ server <- function(input, output, session) {
         results <- list()
 
         if (input$fhir_input_type == "file") {
-          # For file uploads, each dataset creates one entry
+          # For file uploads, filter by selected resource type
           req(input$fhir_category_col)
+          req(input$fhir_resource_to_viz)
 
-          for (dataset_key in names(fhir_data)) {
+          selected_resource_type <- input$fhir_resource_to_viz
+          matching_datasets <- names(fhir_data)[grepl(paste0("_", selected_resource_type, "$"), names(fhir_data))]
+
+          for (dataset_key in matching_datasets) {
             df <- fhir_data[[dataset_key]]
             category_col <- input$fhir_category_col
 
-            # ONLY process datasets that actually have the selected column
             if (category_col %in% colnames(df)) {
-              cat("Processing dataset:", dataset_key, "\n")
-              cat("  Rows in dataset:", nrow(df), "\n")
-              cat("  Looking for column:", category_col, "\n")
-
               df[[category_col]] <- ifelse(is.na(df[[category_col]]) | df[[category_col]] == "", "unknown", as.character(df[[category_col]]))
 
               result_df <- df %>%
@@ -769,11 +804,8 @@ server <- function(input, output, session) {
                 as.data.frame(stringsAsFactors = FALSE)
 
               if (nrow(result_df) > 0) {
-                cat("  Created result with", nrow(result_df), "categories\n")
                 results[[length(results) + 1]] <- list(name = dataset_key, data = result_df)
               }
-            } else {
-              cat("Skipping dataset:", dataset_key, "(column not found)\n")
             }
           }
         } else {
@@ -869,13 +901,25 @@ server <- function(input, output, session) {
         })
 
         output[[plot_name]] <- renderPlot({
-          # Get current input values
+          enabled <- input[[paste0("cb_", idx)]]
           chart     <- input[[paste0("pt_", idx)]]
           filterCat <- input[[paste0("filter_", idx)]]
           alpha     <- input[[paste0("op_", idx)]]
+          data0     <- f$data  # Now this is captured in the local scope
 
-          # Get the data
-          data0 <- f$data
+          # Get all categories across all datasets for consistent x-axis
+          all_categories <- getAllCategories(dl)
+
+          # Ensure data0 has all categories (add missing ones with Count = 0)
+          missing_cats <- setdiff(all_categories, data0$Category)
+          if (length(missing_cats) > 0) {
+            missing_data <- data.frame(
+              Category = missing_cats,
+              Count = 0,
+              stringsAsFactors = FALSE
+            )
+            data0 <- rbind(data0, missing_data)
+          }
 
           # Apply filter if selected
           df0 <- if (!is.null(filterCat) && length(filterCat) > 0) {
@@ -884,17 +928,13 @@ server <- function(input, output, session) {
             data0
           }
 
-          # Make sure we have data to plot
-          if (nrow(df0) == 0) {
-            plot.new()
-            text(0.5, 0.5, "No data to display", cex = 1.5)
-            return()
-          }
+          # Ensure categories are in consistent order
+          df0$Category <- factor(df0$Category, levels = all_categories)
 
-          # Create the plot based on chart type
           p_base <- ggplot(df0, aes(x = Category, y = Count, fill = Category)) +
             theme_minimal(base_size = 14) +
-            scale_y_continuous(limits = c(0, globalMax()))
+            scale_y_continuous(limits = c(0, globalMax())) +
+            scale_x_discrete(drop = FALSE)  # Show all categories even if Count = 0
 
           p <- switch(chart,
                       "Histogram" = p_base + geom_bar(stat = "identity", alpha = alpha),
@@ -903,13 +943,17 @@ server <- function(input, output, session) {
                         coord_polar("y", start = 0),
                       "Line Chart" = ggplot(df0, aes(x = Category, y = Count, group = 1)) +
                         geom_line(size = 1.2, alpha = alpha) +
-                        geom_point(size = 3, alpha = alpha)
+                        geom_point(size = 3, alpha = alpha) +
+                        scale_x_discrete(drop = FALSE)
           )
 
           p + labs(title = f$name, x = "Category", y = "Count") +
             theme(panel.background = element_rect(fill = "transparent", colour = NA),
                   plot.background  = element_rect(fill = "transparent", colour = NA),
-                  panel.grid       = element_blank())
+                  panel.grid       = element_blank(),
+                  axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate labels if needed
+                  legend.position = "none"
+            )
         }, bg = "transparent")
       })
     }
@@ -1045,65 +1089,12 @@ server <- function(input, output, session) {
             uiOutput(paste0("plotUI_", safe_i)),
             sliderInput(paste0("op_", safe_i), "Transparency:",
                         min = 0.1, max = 1, value = 1, step = 0.1),
-            # ADD THIS DOWNLOAD BUTTON:
             downloadButton(paste0("download_", safe_i), "Export JSON",
                            class = "btn btn-sm btn-outline-secondary",
                            style = "width: 100%; margin-top: 10px;")
         )
       )
     }))
-  })
-
-  observe({
-    req(allData())
-    dl <- allData()
-
-    # Use local() to create proper closures for each iteration
-    for (i in seq_along(dl)) {
-      local({
-        idx <- i
-        f <- dl[[idx]]
-
-        ui_name   <- paste0("plotUI_", idx)
-        plot_name <- paste0("plot_", idx)
-
-        output[[ui_name]] <- renderUI({
-          enabled <- input[[paste0("cb_", idx)]]
-          if (isTRUE(enabled)) plotOutput(plot_name, height = "300px")
-        })
-
-        output[[plot_name]] <- renderPlot({
-          enabled <- input[[paste0("cb_", idx)]]
-          chart     <- input[[paste0("pt_", idx)]]
-          filterCat <- input[[paste0("filter_", idx)]]
-          alpha     <- input[[paste0("op_", idx)]]
-          data0     <- f$data  # Now this is captured in the local scope
-
-          df0 <- if (!is.null(filterCat) && length(filterCat) > 0) {
-            data0[data0$Category %in% filterCat, ]
-          } else data0
-
-          p_base <- ggplot(df0, aes(x = Category, y = Count, fill = Category)) +
-            theme_minimal(base_size = 14) +
-            scale_y_continuous(limits = c(0, globalMax()))
-
-          p <- switch(chart,
-                      "Histogram" = p_base + geom_bar(stat = "identity", alpha = alpha),
-                      "Pie Chart" = ggplot(df0, aes(x = "", y = Count, fill = Category)) +
-                        geom_bar(stat = "identity", alpha = alpha, width = 1) +
-                        coord_polar("y", start = 0),
-                      "Line Chart" = ggplot(df0, aes(x = Category, y = Count, group = 1)) +
-                        geom_line(size = 1.2, alpha = alpha) +
-                        geom_point(size = 3, alpha = alpha)
-          )
-
-          p + labs(title = f$name, x = "Category", y = "Count") +
-            theme(panel.background = element_rect(fill = "transparent", colour = NA),
-                  plot.background  = element_rect(fill = "transparent", colour = NA),
-                  panel.grid       = element_blank())
-        }, bg = "transparent")
-      })
-    }
   })
 
   # 4.14 Category summary table
