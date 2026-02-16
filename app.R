@@ -22,7 +22,7 @@ required_pkgs <- c(
   "fhircrackr", "httr",
   "dplyr", "tidyr",
   "ggplot2", "leaflet",
-  "geodata", "terra"
+  "DT"
 )
 
 ensure_pkg(required_pkgs)
@@ -207,6 +207,40 @@ ui <- fluidPage(
                         mainPanel(
                           h4("Uploaded / Loaded Datasets"),
                           tableOutput("dataList")
+                        )
+                      )
+             ),
+             # -- Census Data Tab --
+             tabPanel("Census Data",
+                      sidebarLayout(
+                        sidebarPanel(
+                          h4("Upload Census Data"),
+                          fileInput("censusFile", "Select Census JSON File",
+                                    accept = c(".json"), multiple = FALSE),
+                          hr(),
+                          h4("Visualization Options"),
+                          selectInput("census_chart_type", "Chart Type:",
+                                      choices = c("Grouped Bar Chart" = "grouped",
+                                                  "Stacked Bar Chart" = "stacked",
+                                                  "Dodged Bar Chart" = "dodged"),
+                                      selected = "grouped"),
+                          checkboxInput("census_show_values", "Show Values on Bars", FALSE),
+                          sliderInput("census_alpha", "Transparency:",
+                                      min = 0.3, max = 1, value = 0.8, step = 0.1),
+                          hr(),
+                          downloadButton("downloadCensusData", "Download Census Data (JSON)"),
+                          br(), br(),
+                          downloadButton("downloadCensusPlot", "Download Plot (PNG)")
+                        ),
+                        mainPanel(
+                          h4("Census Population by Age Group and Gender"),
+                          plotOutput("censusPlot", height = "600px"),
+                          hr(),
+                          h4("Census Data Summary"),
+                          tableOutput("censusSummaryTable"),
+                          hr(),
+                          h4("Raw Census Data"),
+                          DT::dataTableOutput("censusDataTable")
                         )
                       )
              ),
@@ -573,6 +607,100 @@ server <- function(input, output, session) {
     })
     do.call(tagList, uiList)
   })
+
+  # 4.3.2
+  loadCensusData <- function(path) {
+    tryCatch({
+      census_json <- fromJSON(path, simplifyVector = FALSE)
+
+      # Navigate to stratum list
+      stratum_list <- NULL
+
+      if (!is.null(census_json$group)) {
+        if (is.list(census_json$group) && length(census_json$group) > 0) {
+          first_group <- if(is.list(census_json$group[[1]])) {
+            census_json$group[[1]]
+          } else {
+            census_json$group
+          }
+
+          if (!is.null(first_group$stratifier)) {
+            if (is.list(first_group$stratifier) && length(first_group$stratifier) > 0) {
+              first_stratifier <- if(is.list(first_group$stratifier[[1]])) {
+                first_group$stratifier[[1]]
+              } else {
+                first_group$stratifier
+              }
+              stratum_list <- first_stratifier$stratum
+            }
+          }
+        }
+      }
+
+      if (is.null(stratum_list) || length(stratum_list) == 0) {
+        warning("No stratum data found in census file")
+        return(NULL)
+      }
+
+      # Extract age and gender from each stratum
+      census_data <- lapply(stratum_list, function(stratum) {
+        components <- stratum$component
+
+        if (is.null(components) || length(components) < 2) {
+          return(NULL)
+        }
+
+        # Extract age (component 1) and gender (component 2)
+        age <- if (!is.null(components[[1]]$value$text)) {
+          components[[1]]$value$text
+        } else {
+          NA
+        }
+
+        gender <- if (!is.null(components[[2]]$value$text)) {
+          components[[2]]$value$text
+        } else {
+          NA
+        }
+
+        # Extract count from measureScore or population
+        count <- 0
+        if (!is.null(stratum$measureScore$value)) {
+          count <- as.numeric(stratum$measureScore$value)
+        } else if (!is.null(stratum$population)) {
+          pop_list <- stratum$population
+          if (is.list(pop_list) && length(pop_list) > 0) {
+            count <- as.numeric(pop_list[[1]]$count %||% 0)
+          }
+        }
+
+        data.frame(
+          Age = age,
+          Gender = gender,
+          Count = count,
+          stringsAsFactors = FALSE
+        )
+      })
+
+      # Combine all data frames
+      census_df <- do.call(rbind, Filter(Negate(is.null), census_data))
+
+      if (is.null(census_df) || nrow(census_df) == 0) {
+        warning("No valid census data extracted")
+        return(NULL)
+      }
+
+      # Clean data
+      census_df <- census_df[!is.na(census_df$Age) & !is.na(census_df$Gender), ]
+      census_df$Count <- as.numeric(census_df$Count)
+
+      return(census_df)
+
+    }, error = function(e) {
+      warning(paste("Error loading census JSON:", e$message))
+      return(NULL)
+    })
+  }
 
   # 4.4a Fetch comprehensive FHIR data using _include and _revinclude
 
@@ -1069,6 +1197,169 @@ server <- function(input, output, session) {
   #    addCircleMarkers(data = centers, lat = ~lat, lng = ~lng,
   #                     label = ~name, radius = 6, fill = TRUE, fillOpacity = 0.9)
   #})
+
+
+  #### Census data reactive
+  censusData <- reactive({
+    req(input$censusFile)
+
+    census_df <- loadCensusData(input$censusFile$datapath)
+
+    if (is.null(census_df)) {
+      showNotification("Failed to load census data. Please check the file format.",
+                       type = "error")
+      return(NULL)
+    }
+
+    showNotification(paste("Loaded", nrow(census_df), "census records"),
+                     type = "message")
+    return(census_df)
+  })
+
+  # Census plot
+  output$censusPlot <- renderPlot({
+    req(censusData())
+
+    df <- censusData()
+    chart_type <- input$census_chart_type
+    alpha <- input$census_alpha
+    show_values <- input$census_show_values
+
+    # Create the base plot
+    p <- ggplot(df, aes(x = Age, y = Count, fill = Gender)) +
+      theme_minimal(base_size = 14) +
+      labs(
+        title = "Population by Age Group and Gender",
+        x = "Age Group",
+        y = "Population Count",
+        fill = "Gender"
+      ) +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
+      )
+
+    # Add bars based on chart type
+    if (chart_type == "grouped" || chart_type == "dodged") {
+      p <- p + geom_bar(stat = "identity",
+                        position = position_dodge(width = 0.9),
+                        alpha = alpha)
+
+      if (show_values) {
+        p <- p + geom_text(aes(label = Count),
+                           position = position_dodge(width = 0.9),
+                           vjust = -0.5, size = 3)
+      }
+    } else if (chart_type == "stacked") {
+      p <- p + geom_bar(stat = "identity", position = "stack", alpha = alpha)
+
+      if (show_values) {
+        p <- p + geom_text(aes(label = Count),
+                           position = position_stack(vjust = 0.5), size = 3)
+      }
+    }
+
+    # Use distinct colors for genders
+    p <- p + scale_fill_brewer(palette = "Set2")
+
+    return(p)
+  })
+
+  # Census summary table
+  output$censusSummaryTable <- renderTable({
+    req(censusData())
+
+    df <- censusData()
+
+    # Create summary statistics
+    summary_df <- df %>%
+      group_by(Gender) %>%
+      summarise(
+        Total_Population = sum(Count, na.rm = TRUE),
+        Age_Groups = n_distinct(Age),
+        Average_per_Group = round(mean(Count, na.rm = TRUE), 0)
+      ) %>%
+      as.data.frame()
+
+    return(summary_df)
+  })
+
+  # Census data table
+  output$censusDataTable <- DT::renderDataTable({
+    req(censusData())
+
+    DT::datatable(
+      censusData(),
+      options = list(
+        pageLength = 25,
+        scrollX = TRUE,
+        order = list(list(0, 'asc'), list(1, 'asc'))
+      ),
+      rownames = FALSE
+    )
+  })
+
+  # Download census data
+  output$downloadCensusData <- downloadHandler(
+    filename = function() {
+      paste0("census_data_", Sys.Date(), ".json")
+    },
+    content = function(file) {
+      req(censusData())
+      jsonlite::write_json(censusData(), file, pretty = TRUE)
+    }
+  )
+
+  # Download census plot
+  output$downloadCensusPlot <- downloadHandler(
+    filename = function() {
+      paste0("census_plot_", Sys.Date(), ".png")
+    },
+    content = function(file) {
+      req(censusData())
+
+      df <- censusData()
+      chart_type <- input$census_chart_type
+      alpha <- input$census_alpha
+      show_values <- input$census_show_values
+
+      p <- ggplot(df, aes(x = Age, y = Count, fill = Gender)) +
+        theme_minimal(base_size = 14) +
+        labs(
+          title = "Population by Age Group and Gender",
+          x = "Age Group",
+          y = "Population Count",
+          fill = "Gender"
+        ) +
+        theme(
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "bottom",
+          plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
+        )
+
+      if (chart_type == "grouped" || chart_type == "dodged") {
+        p <- p + geom_bar(stat = "identity",
+                          position = position_dodge(width = 0.9),
+                          alpha = alpha)
+        if (show_values) {
+          p <- p + geom_text(aes(label = Count),
+                             position = position_dodge(width = 0.9),
+                             vjust = -0.5, size = 3)
+        }
+      } else if (chart_type == "stacked") {
+        p <- p + geom_bar(stat = "identity", position = "stack", alpha = alpha)
+        if (show_values) {
+          p <- p + geom_text(aes(label = Count),
+                             position = position_stack(vjust = 0.5), size = 3)
+        }
+      }
+
+      p <- p + scale_fill_brewer(palette = "Set2")
+
+      ggsave(file, plot = p, width = 12, height = 8, dpi = 300)
+    }
+  )
 
   # 4.13 Draggable mini‐plots
   output$plotsUI <- renderUI({
