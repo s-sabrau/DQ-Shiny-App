@@ -227,10 +227,18 @@ ui <- fluidPage(
                           checkboxInput("census_show_values", "Show Values on Bars", FALSE),
                           sliderInput("census_alpha", "Transparency:",
                                       min = 0.3, max = 1, value = 0.8, step = 0.1),
+                          checkboxInput("census_log_scale", "Log Scale (Y-axis)", FALSE),
                           hr(),
                           downloadButton("downloadCensusData", "Download Census Data (JSON)"),
                           br(), br(),
-                          downloadButton("downloadCensusPlot", "Download Plot (PNG)")
+                          downloadButton("downloadCensusPlot", "Download Plot (PNG)"),
+                          hr(),
+                          #upload fhir file
+                          h4("Upload FHIR file"),
+                          fileInput("fhirFile", "Select FHIR Bundle",
+                                    accept = c(".json"), multiple = FALSE),
+
+
                         ),
                         mainPanel(
                           h4("Census Population by Age Group and Gender"),
@@ -1202,67 +1210,242 @@ server <- function(input, output, session) {
   #### Census data reactive
   censusData <- reactive({
     req(input$censusFile)
-
     census_df <- loadCensusData(input$censusFile$datapath)
-
     if (is.null(census_df)) {
-      showNotification("Failed to load census data. Please check the file format.",
-                       type = "error")
+      showNotification("Failed to load census data. Please check the file format.", type = "error")
       return(NULL)
     }
-
-    showNotification(paste("Loaded", nrow(census_df), "census records"),
-                     type = "message")
+    census_df$Source <- "Census"          # ← NEW: tag the source
+    showNotification(paste("Loaded", nrow(census_df), "census records"), type = "message")
     return(census_df)
+  })
+
+  fhirPatientData <- reactive({
+    req(input$fhirFile)     # the fileInput("fhirFile", ...) already in the Census sidebar
+    req(censusData())       # need census age-group labels to bin into
+
+    census_df          <- censusData()
+    census_age_labels  <- unique(census_df$Age)
+    census_gender_labels <- unique(census_df$Gender)
+
+    tryCatch({
+      raw <- jsonlite::fromJSON(input$fhirFile$datapath, simplifyVector = FALSE)
+
+      # Accept both a plain Bundle and a list of entries
+      entries <- NULL
+      if (!is.null(raw$resourceType) && raw$resourceType == "Bundle") {
+        entries <- raw$entry
+      } else if (is.list(raw)) {
+        entries <- raw          # already a flat list of resources
+      }
+
+      if (is.null(entries) || length(entries) == 0) {
+        showNotification("No entries found in FHIR bundle.", type = "warning")
+        return(NULL)
+      }
+
+      # Extract Patient resources only
+      patients <- Filter(function(e) {
+        res <- if (!is.null(e$resource)) e$resource else e
+        !is.null(res$resourceType) && res$resourceType == "Patient"
+      }, entries)
+
+      if (length(patients) == 0) {
+        showNotification("No Patient resources found in FHIR bundle.", type = "warning")
+        return(NULL)
+      }
+
+      # Pull birthDate and gender from each patient
+      records <- lapply(patients, function(e) {
+        p      <- if (!is.null(e$resource)) e$resource else e
+        bd     <- p$birthDate %||% NA_character_
+        gender <- p$gender    %||% NA_character_
+        list(birthDate = as.character(bd), gender = as.character(gender))
+      })
+
+      df <- data.frame(
+        birthDate = sapply(records, `[[`, "birthDate"),
+        gender    = sapply(records, `[[`, "gender"),
+        stringsAsFactors = FALSE
+      )
+
+      # Compute age in whole years from birthDate (format YYYY, YYYY-MM, YYYY-MM-DD)
+      today <- Sys.Date()
+
+      df$age_numeric <- sapply(df$birthDate, function(bd) {
+        if (is.null(bd) || is.na(bd) || !nzchar(trimws(bd))) return(NA_real_)
+
+        bd <- trimws(bd)
+
+
+
+        # Strip time component if present: "2017-09-05T22:00:00.000Z" → "2017-09-05"
+        bd <- sub("T.*$", "", bd)
+
+        cat("bd:", paste0("[", bd, "]"), "\n")
+        # Pad partial ISO dates
+        bd_padded <- if (nchar(bd) == 4)      paste0(bd, "-01-01")
+        else if (nchar(bd) == 7) paste0(bd, "-01")
+        else                     bd
+
+        dob <- tryCatch(as.Date(bd_padded), error = function(e) NA)
+
+        if (is.null(dob) || length(dob) == 0 || is.na(dob)) return(NA_real_)
+
+        today <- Sys.Date()
+        if (dob >= today || dob < as.Date("1900-01-01")) return(NA_real_)
+
+        year_diff     <- as.numeric(format(today, "%Y")) - as.numeric(format(dob, "%Y"))
+        birthday_passed <- format(today, "%m-%d") >= format(dob, "%m-%d")
+        as.numeric(year_diff - ifelse(birthday_passed, 0L, 1L))
+      })
+
+      # Bin into census age groups
+      df$Age <- bin_age_to_census_groups(df$age_numeric, census_age_labels)
+
+      # Map gender to census labels
+      df$Gender <- map_fhir_gender(df$gender, census_gender_labels)
+
+      # Drop rows where either Age or Gender could not be mapped
+      df <- df[!is.na(df$Age) & !is.na(df$Gender), ]
+
+      if (nrow(df) == 0) {
+        showNotification(
+          "FHIR patients could not be matched to census Age/Gender groups. Check age labels.",
+          type = "warning"
+        )
+        return(NULL)
+      }
+
+      # Aggregate: count patients per Age × Gender cell
+      result <- df %>%
+        dplyr::count(Age, Gender, name = "Count") %>%
+        as.data.frame(stringsAsFactors = FALSE)
+
+      result$Source <- "FHIR"
+
+      showNotification(
+        paste0("FHIR: ", nrow(df), " patients matched across ",
+               nrow(result), " Age×Gender groups"),
+        type = "message"
+      )
+
+      return(result)
+
+    }, error = function(e) {
+      cat("ERROR MESSAGE:", conditionMessage(e), "\n")
+      cat("ERROR CALL:", deparse(conditionCall(e)), "\n")
+      showNotification(paste("Error parsing FHIR bundle:", e$message), type = "error")
+      return(NULL)
+    })
   })
 
   # Census plot
   output$censusPlot <- renderPlot({
     req(censusData())
 
-    df <- censusData()
-    chart_type <- input$census_chart_type
-    alpha <- input$census_alpha
+    census_df  <- censusData()
+    fhir_df    <- fhirPatientData()     # NULL if no FHIR file uploaded yet — that's fine
+
+    chart_type  <- input$census_chart_type
+    alpha       <- input$census_alpha
     show_values <- input$census_show_values
 
-    # Create the base plot
-    p <- ggplot(df, aes(x = Age, y = Count, fill = Gender)) +
-      theme_minimal(base_size = 14) +
-      labs(
-        title = "Population by Age Group and Gender",
-        x = "Age Group",
-        y = "Population Count",
-        fill = "Gender"
-      ) +
-      theme(
-        axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "bottom",
-        plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
+    # ── Combine census + FHIR (if available) ────────────────────────────────────
+    if (!is.null(fhir_df)) {
+      # Keep only Age groups and Genders present in census so axes stay consistent
+      fhir_df <- fhir_df[fhir_df$Age    %in% unique(census_df$Age) &
+                           fhir_df$Gender %in% unique(census_df$Gender), ]
+
+      plot_df <- rbind(
+        census_df[, c("Age", "Gender", "Count", "Source")],
+        fhir_df  [, c("Age", "Gender", "Count", "Source")]
       )
 
-    # Add bars based on chart type
+      # Interaction label used for fill: e.g. "female · Census", "male · FHIR"
+      plot_df$fill_group <- paste(plot_df$Gender, "\u00b7", plot_df$Source)
+
+      # Colour palette: one hue per gender (from Set2), light shade = Census, dark = FHIR
+      genders      <- sort(unique(census_df$Gender))
+      base_colours <- RColorBrewer::brewer.pal(max(3, length(genders)), "Set2")[seq_along(genders)]
+
+      # Census uses Set2 (soft greens/blues/oranges), FHIR uses Dark2 (bold versions)
+      census_colours <- RColorBrewer::brewer.pal(max(3, length(genders)), "Set2")[seq_along(genders)]
+      fhir_colours   <- RColorBrewer::brewer.pal(max(3, length(genders)), "Dark2")[seq_along(genders)]
+
+      fill_vals <- c()
+      for (k in seq_along(genders)) {
+        census_lbl <- paste(genders[k], "\u00b7 Census")
+        fhir_lbl   <- paste(genders[k], "\u00b7 FHIR")
+        fill_vals[census_lbl] <- census_colours[k]
+        fill_vals[fhir_lbl]   <- fhir_colours[k]
+      }
+
+      overlay_active <- TRUE
+    } else {
+      # No FHIR data — plot census only exactly as before
+      plot_df <- census_df[, c("Age", "Gender", "Count", "Source")]
+      plot_df$fill_group <- plot_df$Gender
+
+      fill_vals      <- NULL    # fall back to scale_fill_brewer below
+      overlay_active <- FALSE
+    }
+
+    # ── Base ggplot ──────────────────────────────────────────────────────────────
+    p <- ggplot(plot_df, aes(x = Age, y = Count, fill = fill_group)) +
+      theme_minimal(base_size = 14) +
+      labs(
+        title = if (overlay_active) "Population by Age Group and Gender  (Census vs FHIR)"
+        else                "Population by Age Group and Gender",
+        x     = "Age Group",
+        y     = "Population Count",
+        fill  = if (overlay_active) "Gender \u00b7 Source" else "Gender"
+      ) +
+      theme(
+        axis.text.x  = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom",
+        plot.title   = element_text(hjust = 0.5, face = "bold", size = 16)
+      )
+
+    # Apply manual colours when FHIR overlay is active
+    if (overlay_active) {
+      p <- p + scale_fill_manual(values = fill_vals)
+    } else {
+      p <- p + scale_fill_brewer(palette = "Set2")
+    }
+
+    # ── Geoms based on chart type ────────────────────────────────────────────────
+    dodge_width <- if (overlay_active) 0.85 else 0.9   # slightly tighter when doubled
+
     if (chart_type == "grouped" || chart_type == "dodged") {
       p <- p + geom_bar(stat = "identity",
-                        position = position_dodge(width = 0.9),
-                        alpha = alpha)
-
+                        position = position_dodge(width = dodge_width),
+                        alpha = alpha,
+                        colour = "white", linewidth = 0.2)
       if (show_values) {
         p <- p + geom_text(aes(label = Count),
-                           position = position_dodge(width = 0.9),
-                           vjust = -0.5, size = 3)
+                           position = position_dodge(width = dodge_width),
+                           vjust = -0.4, size = 2.8)
       }
+
     } else if (chart_type == "stacked") {
-      p <- p + geom_bar(stat = "identity", position = "stack", alpha = alpha)
+      # Stacked makes most sense per-source; switch to faceted display
+      p <- p +
+        geom_bar(stat = "identity", position = "stack", alpha = alpha) +
+        {if (overlay_active) facet_wrap(~Source, ncol = 2) else NULL}
 
       if (show_values) {
         p <- p + geom_text(aes(label = Count),
-                           position = position_stack(vjust = 0.5), size = 3)
+                           position = position_stack(vjust = 0.5), size = 2.8)
       }
     }
 
-    # Use distinct colors for genders
-    p <- p + scale_fill_brewer(palette = "Set2")
-
+    if (isTRUE(input$census_log_scale)) {
+      p <- p + scale_y_continuous(
+        trans = "log10",
+        labels = scales::comma
+      )
+    }
     return(p)
   })
 
@@ -1360,6 +1543,90 @@ server <- function(input, output, session) {
       ggsave(file, plot = p, width = 12, height = 8, dpi = 300)
     }
   )
+
+  # ── HELPER: bin a numeric age into whatever age-group labels exist in census ──
+  # Reads the census age labels (e.g. "0-17", "18-34", "35-49", "50-64", "65+")
+  # and maps a numeric age to the correct label.
+  # Returns NA if no label can be matched.
+  bin_age_to_census_groups <- function(age_numeric, census_age_labels) {
+    # Parse each label into a (low, high) pair
+    # Supported formats:  "0-17"  "18-34"  "65+"  "under 18"  "80 and over"
+    parse_label <- function(lbl) {
+      lbl <- trimws(lbl)
+      # Pattern: "65+" or "65 and over" or "65 and older" → [65, Inf)
+      if (grepl("^(\\d+)\\s*\\+$", lbl) ||
+          grepl("^(\\d+)\\s+and\\s+(over|older|above)", lbl, ignore.case = TRUE) ||
+          grepl("^(\\d+)\\s+or\\s+(over|older|above)", lbl, ignore.case = TRUE)) {
+        lo <- as.numeric(sub("^(\\d+).*", "\\1", lbl))
+        return(c(lo, Inf))
+      }
+      # Pattern: "under 18" or "less than 18" → [0, 17]
+      if (grepl("^under\\s+(\\d+)$", lbl, ignore.case = TRUE) ||
+          grepl("^less\\s+than\\s+(\\d+)$", lbl, ignore.case = TRUE)) {
+        hi <- as.numeric(sub("\\D*(\\d+)$", "\\1", lbl)) - 1
+        print("bin: ", c(0, hi))
+        return(c(0, hi))
+      }
+      # Pattern: "18-34" or "18 to 34" or "18–34"
+      m <- regmatches(lbl, regexpr("^(\\d+)\\s*[-–to]+\\s*(\\d+)$", lbl))
+      if (length(m) == 1) {
+        nums <- as.numeric(regmatches(m, gregexpr("\\d+", m))[[1]])
+        return(c(nums[1], nums[2]))
+      }
+      # Single number label – exact match
+      if (grepl("^\\d+$", lbl)) {
+        n <- as.numeric(lbl)
+        return(c(n, n))
+      }
+      return(c(NA, NA))
+    }
+
+    # Build lookup table once
+    bounds <- lapply(census_age_labels, parse_label)
+
+    # Assign each age
+    sapply(age_numeric, function(a) {
+      if (is.na(a)) return(NA_character_)
+      for (k in seq_along(census_age_labels)) {
+        lo <- bounds[[k]][1]; hi <- bounds[[k]][2]
+        if (!is.na(lo) && a >= lo && a <= hi) return(census_age_labels[k])
+      }
+      NA_character_          # age falls outside all defined groups
+    })
+  }
+
+  # ── HELPER: normalise FHIR gender to census Gender labels ────────────────────
+  # census_gender_labels: the unique Gender values found in censusData()
+  # fhir_gender: character vector of raw FHIR gender values
+  map_fhir_gender <- function(fhir_gender, census_gender_labels) {
+    fhir_lower   <- tolower(trimws(as.character(fhir_gender)))
+    census_lower <- tolower(trimws(census_gender_labels))
+
+    unique_fhir <- unique(fhir_lower)
+    # Remove NA values from the unique set — handle them at the end
+    unique_fhir <- unique_fhir[!is.na(unique_fhir)]
+
+    mapping <- setNames(rep(NA_character_, length(unique_fhir)), unique_fhir)
+
+    for (fg in unique_fhir) {
+      exact <- census_lower == fg
+      exact[is.na(exact)] <- FALSE          # ← guard: NA → FALSE
+      if (any(exact)) { mapping[fg] <- census_gender_labels[which(exact)[1]]; next }
+
+      sub_match <- startsWith(census_lower, fg) | startsWith(fg, census_lower)
+      sub_match[is.na(sub_match)] <- FALSE  # ← same guard
+      if (any(sub_match)) { mapping[fg] <- census_gender_labels[which(sub_match)[1]]; next }
+
+      if (!is.na(fg) && fg %in% c("male", "m"))             { m <- census_lower %in% c("male","männlich","m","man");    if (any(m)) mapping[fg] <- census_gender_labels[which(m)[1]] }
+      if (!is.na(fg) && fg %in% c("female", "f", "w"))      { m <- census_lower %in% c("female","weiblich","f","w","woman"); if (any(m)) mapping[fg] <- census_gender_labels[which(m)[1]] }
+      if (!is.na(fg) && fg %in% c("other", "diverse", "d")) { m <- census_lower %in% c("other","diverse","d","divers"); if (any(m)) mapping[fg] <- census_gender_labels[which(m)[1]] }
+      if (!is.na(fg) && fg %in% c("unknown", ""))           { m <- census_lower %in% c("unknown","unbekannt","u");      if (any(m)) mapping[fg] <- census_gender_labels[which(m)[1]] }
+    }
+
+    # Apply mapping — NA fhir_gender values map to NA_character_ naturally
+    mapped <- mapping[fhir_lower]
+    ifelse(is.na(mapped), NA_character_, mapped)
+  }
 
   # 4.13 Draggable mini‐plots
   output$plotsUI <- renderUI({
