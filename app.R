@@ -9,6 +9,9 @@
 #               and summarizing CSV/JSON/FHIR datasets.
 # -------------------------------------------------------------------------------
 
+# use this if the ragg renderer doesn't work, it defaults to the standard renderer than
+options(shiny.useragg = FALSE)
+
 # 1. Install and load required packages
 ensure_pkg <- function(pkgs) {
   missing <- setdiff(pkgs, installed.packages()[, "Package"])
@@ -252,7 +255,24 @@ ui <- fluidPage(
                         )
                       )
              ),
-
+             # -- FHIR in bins Tab --
+             tabPanel("FHIR in bins",
+                sidebarLayout(
+                  sidebarPanel(
+                    h4("Upload FHIR Bundle"),
+                    fileInput("fhirFilesBinning", "Select FHIR JSON files",
+                              accept = c(".json"), multiple = TRUE),
+                    hr(),
+                    h4("Category Selection"),
+                    uiOutput("fhirResourceTypeUIBinning"),
+                    hr(),
+                    uiOutput("fhirMappingUIBinning")
+                  ),
+                  mainPanel(
+                    h4("Visualisation of the fhir data in bins incoming")
+                  )
+                ),
+             ),
              # -- Visualization Tab --
              tabPanel("Visualization",
                       fluidRow(
@@ -715,7 +735,7 @@ server <- function(input, output, session) {
   # Replace the fhirRawData function with this corrected version:
 
   fhirRawData <- reactive({
-    if (input$data_source == "fhir") {
+    #if (input$data_source == "fhir") {
       if (input$fhir_input_type == "api") {
         # Existing API logic - wrap in eventReactive
         req(input$load_fhir)
@@ -786,14 +806,22 @@ server <- function(input, output, session) {
 
         return(all_files_data)
       }
-    }
+    #}
     return(NULL)
   })
 
   # 4.4b UI for selecting resource type to visualize
   output$fhirResourceTypeUI <- renderUI({
-    if (input$data_source == "fhir") {
+    #if (input$data_source == "fhir") {
       fhir_data <- fhirRawData()
+      cat("============== DEBUG START ==============\n")
+      cat("fhir_data is null:", is.null(fhir_data), "\n")
+      cat("fhir_data length:", length(fhir_data), "\n")
+      if (!is.null(fhir_data)) {
+        cat("fhir_data names:", paste(names(fhir_data), collapse = ", "), "\n")
+      }
+      cat("============== DEBUG END ==============\n")
+      flush.console()
       if (!is.null(fhir_data)) {
         available_resources <- names(fhir_data)
 
@@ -821,7 +849,7 @@ server <- function(input, output, session) {
           }
         }
       }
-    }
+    #}
   })
 
   # 4.4c Update the mapping UI to show columns from selected resource
@@ -1737,6 +1765,72 @@ server <- function(input, output, session) {
     }
   })
 
+  # 4.16 FHIR data binning and aggregation
+  fhirDataBinning <- reactive({
+    req(input$fhirFilesBinning)
+    
+    all_files_data <- list()
+    fps <- input$fhirFilesBinning$datapath
+    fns <- input$fhirFilesBinning$name
+    
+    for (i in seq_along(fps)) {
+      file_data_list <- loadFhirFile(fps[i], fns[i])
+      if (!is.null(file_data_list) && length(file_data_list) > 0) {
+        all_files_data <- c(all_files_data, file_data_list)
+      }
+    }
+    
+    return(all_files_data)
+  })
+   
+  output$fhirResourceTypeUIBinning <- renderUI({
+    fhir_data <- fhirDataBinning()
+    if (!is.null(fhir_data)) {
+      available_resources <- names(fhir_data)
+      if (length(available_resources) > 0) {
+        resource_types <- unique(sapply(available_resources, function(x) {
+          parts <- strsplit(x, "_")[[1]]
+          if (length(parts) > 1) parts[length(parts)] else x
+        }))
+        
+        selectInput("fhir_resource_to_viz_binning", "Resource Type to Visualize:",
+                    choices = resource_types,
+                    selected = resource_types[1])
+      }
+    }
+  })
+  
+  output$fhirMappingUIBinning <- renderUI({
+    fhir_data <- fhirDataBinning()
+    req(input$fhir_resource_to_viz_binning)
+    
+    selected_resource_type <- input$fhir_resource_to_viz_binning
+    matching_datasets <- names(fhir_data)[grepl(paste0("_", selected_resource_type, "$"), names(fhir_data))]
+    
+    if (length(matching_datasets) > 0) {
+      all_columns <- unique(unlist(lapply(matching_datasets, function(dataset_name) {
+        colnames(fhir_data[[dataset_name]])
+      })))
+      
+      resource_prefix <- paste0(tolower(selected_resource_type), ".")
+      resource_columns <- all_columns[grepl(paste0("^", resource_prefix), all_columns)]
+      
+      if (length(resource_columns) > 0) {
+        selectInput("fhir_category_col_binning", "Category column:",
+                    choices = resource_columns,
+                    selected = resource_columns[1])
+      }
+    }
+  })
+  
+  output$fhirValuesUIBinning <- renderZU({
+    fhir_data <- fhirDataBinning()
+    req(input$fhir_category_col_binning)
+    
+    selected_attribute <- input$fhir_category_col_binning
+    
+    
+  })
 }
 # end server
 
