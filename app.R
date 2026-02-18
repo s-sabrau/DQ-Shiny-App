@@ -266,7 +266,16 @@ ui <- fluidPage(
                     h4("Category Selection"),
                     uiOutput("fhirResourceTypeUIBinning"),
                     hr(),
-                    uiOutput("fhirMappingUIBinning")
+                    uiOutput("fhirMappingUIBinning"),
+                    conditionalPanel(
+                      condition = "input.fhir_category_col_binning != null && input.fhir_category_col_binning != ''",
+                      h4("Create the bins"),
+                      radioButtons(
+                        "value_types", "What is the type of the values", c("Numeric" = "num", "Boolean" = "bool", "Text" = "text"), "text"),
+                      sliderInput("fhir_n_bins", "Number of bins:",
+                                  min = 1, max = 50, value = 5, step = 1),
+                    ),
+                    uiOutput("fhirValuesUIBinning"),
                   ),
                   mainPanel(
                     h4("Visualisation of the fhir data in bins incoming")
@@ -1820,16 +1829,51 @@ server <- function(input, output, session) {
                     choices = resource_columns,
                     selected = resource_columns[1])
       }
+      
     }
   })
   
-  output$fhirValuesUIBinning <- renderZU({
+  output$fhirValuesUIBinning <- renderUI({
     fhir_data <- fhirDataBinning()
-    req(input$fhir_category_col_binning)
+    req(input$fhir_category_col_binning, input$fhir_resource_to_viz_binning)
     
+    selected_resource_type <- input$fhir_resource_to_viz_binning
     selected_attribute <- input$fhir_category_col_binning
+
+    n_bins <- input$fhir_n_bins %||% 5 #get bins from input or default to 5 if input isn't loaded yet
+    value_type <- input$value_types %||% FALSE
+    
+    # Get unique values from the selected column
+    matching_datasets <- names(fhir_data)[grepl(paste0("_", selected_resource_type, "$"), names(fhir_data))]
+
+    uniqueValues <- sort(unique(unlist(lapply(matching_datasets, function(dataset_name) {
+      df <- fhir_data[[dataset_name]]
+      if (selected_attribute %in% colnames(df)) {
+        df[[selected_attribute]]
+      }
+      else cat("FAILED \n")
+    }))))
     
     
+    
+    bin_inputs <- lapply(1:n_bins, function(i){
+      if(value_type == "num"){
+        numericInput(
+          paste0("bin_", i), paste("Bin", i, "max:"), i)
+      } else {
+        selectInput(
+          inputId = paste0("bin_", i),
+          label = paste("Bin", i, "values:"),
+          choices = uniqueValues,
+          multiple = TRUE
+        ) 
+      }
+    })
+    
+    tagList(
+      h4("Create the bins"),
+      bin_inputs
+    )
   })
 }
 # end server
