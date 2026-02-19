@@ -272,13 +272,17 @@ ui <- fluidPage(
                       h4("Create the bins"),
                       radioButtons(
                         "value_types", "What is the type of the values", c("Numeric" = "num", "Boolean" = "bool", "Text" = "text"), "text"),
-                      sliderInput("fhir_n_bins", "Number of bins:",
-                                  min = 1, max = 50, value = 5, step = 1),
+                      conditionalPanel(
+                        condition = "input.value_types != null && input.value_types != 'bool'",
+                        sliderInput("fhir_n_bins", "Number of bins:",
+                                  min = 1, max = 50, value = 5, step = 1)
+                      )
                     ),
                     uiOutput("fhirValuesUIBinning"),
                   ),
                   mainPanel(
-                    h4("Visualisation of the fhir data in bins incoming")
+                    h4("Visualisation of the fhir data in bins incoming"),
+                    plotOutput("plotBins", height = "400px")
                   )
                 ),
              ),
@@ -1777,21 +1781,21 @@ server <- function(input, output, session) {
   # 4.16 FHIR data binning and aggregation
   fhirDataBinning <- reactive({
     req(input$fhirFilesBinning)
-    
+
     all_files_data <- list()
     fps <- input$fhirFilesBinning$datapath
     fns <- input$fhirFilesBinning$name
-    
+
     for (i in seq_along(fps)) {
       file_data_list <- loadFhirFile(fps[i], fns[i])
       if (!is.null(file_data_list) && length(file_data_list) > 0) {
         all_files_data <- c(all_files_data, file_data_list)
       }
     }
-    
+
     return(all_files_data)
   })
-   
+
   output$fhirResourceTypeUIBinning <- renderUI({
     fhir_data <- fhirDataBinning()
     if (!is.null(fhir_data)) {
@@ -1801,48 +1805,48 @@ server <- function(input, output, session) {
           parts <- strsplit(x, "_")[[1]]
           if (length(parts) > 1) parts[length(parts)] else x
         }))
-        
+
         selectInput("fhir_resource_to_viz_binning", "Resource Type to Visualize:",
                     choices = resource_types,
                     selected = resource_types[1])
       }
     }
   })
-  
+
   output$fhirMappingUIBinning <- renderUI({
     fhir_data <- fhirDataBinning()
     req(input$fhir_resource_to_viz_binning)
-    
+
     selected_resource_type <- input$fhir_resource_to_viz_binning
     matching_datasets <- names(fhir_data)[grepl(paste0("_", selected_resource_type, "$"), names(fhir_data))]
-    
+
     if (length(matching_datasets) > 0) {
       all_columns <- unique(unlist(lapply(matching_datasets, function(dataset_name) {
         colnames(fhir_data[[dataset_name]])
       })))
-      
+
       resource_prefix <- paste0(tolower(selected_resource_type), ".")
       resource_columns <- all_columns[grepl(paste0("^", resource_prefix), all_columns)]
-      
+
       if (length(resource_columns) > 0) {
         selectInput("fhir_category_col_binning", "Category column:",
                     choices = resource_columns,
                     selected = resource_columns[1])
       }
-      
+
     }
   })
-  
+
   output$fhirValuesUIBinning <- renderUI({
     fhir_data <- fhirDataBinning()
     req(input$fhir_category_col_binning, input$fhir_resource_to_viz_binning)
-    
+
     selected_resource_type <- input$fhir_resource_to_viz_binning
     selected_attribute <- input$fhir_category_col_binning
 
     n_bins <- input$fhir_n_bins %||% 5 #get bins from input or default to 5 if input isn't loaded yet
     value_type <- input$value_types %||% FALSE
-    
+
     # Get unique values from the selected column
     matching_datasets <- names(fhir_data)[grepl(paste0("_", selected_resource_type, "$"), names(fhir_data))]
 
@@ -1853,9 +1857,11 @@ server <- function(input, output, session) {
       }
       else cat("FAILED \n")
     }))))
-    
-    
-    
+
+    if (value_type == "bool"){
+      n_bins = 2
+    }
+
     bin_inputs <- lapply(1:n_bins, function(i){
       if(value_type == "num"){
         numericInput(
@@ -1866,14 +1872,69 @@ server <- function(input, output, session) {
           label = paste("Bin", i, "values:"),
           choices = uniqueValues,
           multiple = TRUE
-        ) 
+        )
       }
     })
-    
+
     tagList(
       h4("Create the bins"),
       bin_inputs
     )
+  })
+
+  output$plotBins <- renderPlot({
+    fhir_data <- fhirDataBinning()
+    req(input$fhir_category_col_binning, input$fhir_resource_to_viz_binning, input$fhir_n_bins, input$value_types)
+
+    selected_resource_type <- input$fhir_resource_to_viz_binning
+    selected_attribute <- input$fhir_category_col_binning
+    n_bins <- input$fhir_n_bins
+    value_type <-input$value_types
+
+    # Get all data from matching datasets
+    matching_datasets <- names(fhir_data)[grepl(paste0("_", selected_resource_type, "$"), names(fhir_data))]
+    all_data <- do.call(rbind, lapply(matching_datasets, function(dataset_name) {
+      df <- fhir_data[[dataset_name]]
+      if (selected_attribute %in% colnames(df)) {
+        data.frame(value = df[[selected_attribute]], stringsAsFactors = FALSE)
+      }
+    }))
+
+    # Assign each value to a bin
+    all_data$bin <- NA_character_
+    for (i in 1:n_bins) {
+      if(value_type == "text"){
+        bin_values <- input[[paste0("bin_", i)]]
+        if (!is.null(bin_values) && length(bin_values) > 0) {
+          all_data$bin[all_data$value %in% bin_values] <- paste("Bin", i)
+        }
+      } else if (value_type == "num"){
+        bin_max <- input[[paste0("bin_", i)]]
+        bin_min <- input[[paste0("bin_", i-1)]] %||% -Inf
+        all_data$bin[all_data$value <= bin_max & all_data$value > bin_min] <- paste("Bin", i)
+      } else if (value_type == "bool"){
+        if (i == 1) all_data$bin[all_data$value == FALSE] <- paste("Bin", i)
+        if (i == 2) all_data$bin[all_data$value == TRUE] <- paste("Bin", i)
+      }
+    }
+
+    # Remove unassigned values
+    all_data <- all_data[!is.na(all_data$bin), ]
+
+    # Count per bin
+    bin_counts <- as.data.frame(table(all_data$bin))
+    names(bin_counts) <- c("Bin", "Count")
+
+    # Plot
+    ggplot(bin_counts, aes(x = Bin, y = Count, fill = Bin)) +
+      geom_bar(stat = "identity") +
+      theme_minimal(base_size = 14) +
+      labs(
+        title = paste("Distribution of", selected_attribute, "across bins"),
+        x = "Bin",
+        y = "Count"
+      ) +
+      theme(legend.position = "none")
   })
 }
 # end server
