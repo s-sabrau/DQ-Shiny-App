@@ -175,7 +175,8 @@ ui <- fluidPage(
                         sidebarPanel(
                           radioButtons("data_source", "Data Source:",
                                        choices = c("File (CSV/JSON)" = "file",
-                                                   "FHIR (HAPI Test Server)" = "fhir")
+                                                   "FHIR (HAPI Test Server)" = "fhir",
+                                                   "Census data" = "census")
                           ),
                           conditionalPanel(
                             "input.data_source=='file'",
@@ -205,10 +206,17 @@ ui <- fluidPage(
                             ),
                             uiOutput("fhirResourceTypeUI"),
                             uiOutput("fhirMappingUI")
+                          ),
+                          conditionalPanel(
+                            "input.data_source=='census'",
+                            h4("Upload census files"),
+                            fileInput("censusFile", "Select census JSON files",
+                                      accept = c(".json"), multiple = TRUE)
                           )
                         ),
                         mainPanel(
                           h4("Uploaded / Loaded Datasets"),
+                          span("Laden Sie ihre Datein in den entsprechenden Kategorien hoch. FHIR BLAZE server können über den entsprechenden Input angesprochen werden."),
                           tableOutput("dataList")
                         )
                       )
@@ -260,7 +268,8 @@ ui <- fluidPage(
                 sidebarLayout(
                   sidebarPanel(
                     h4("Upload FHIR Bundle"),
-                    fileInput("fhirFilesBinning", "Select FHIR JSON files",
+                    fileInput("
+                              ", "Select FHIR JSON files",
                               accept = c(".json"), multiple = TRUE),
                     hr(),
                     h4("Category Selection"),
@@ -827,14 +836,7 @@ server <- function(input, output, session) {
   output$fhirResourceTypeUI <- renderUI({
     #if (input$data_source == "fhir") {
       fhir_data <- fhirRawData()
-      cat("============== DEBUG START ==============\n")
-      cat("fhir_data is null:", is.null(fhir_data), "\n")
-      cat("fhir_data length:", length(fhir_data), "\n")
-      if (!is.null(fhir_data)) {
-        cat("fhir_data names:", paste(names(fhir_data), collapse = ", "), "\n")
-      }
-      cat("============== DEBUG END ==============\n")
-      flush.console()
+
       if (!is.null(fhir_data)) {
         available_resources <- names(fhir_data)
 
@@ -924,7 +926,19 @@ server <- function(input, output, session) {
     }
   })
 
-  # 4.5 Aggregate uploaded/FHIR datasets
+  # 4.5.1 List all uploaded files/requested data
+  allDataUploads <- reactive({
+    req(input$dataFiles, input$fhirFiles, input$fhirApiRequest, input$censusFiles)
+    
+    json_files <- input$dataFiles
+    fhir_bundles <- input$fhirFiles
+    census_files <- input$censusFiles
+    fhir_api <- input$fhirApiRequest
+    
+  })
+  
+  # 4.5.2 Aggregate uploaded/FHIR datasets
+  
   allData <- reactive({
     if (input$data_source == "file") {
       # Existing file logic unchanged
@@ -1489,6 +1503,13 @@ server <- function(input, output, session) {
     }
     return(p)
   })
+  
+  # Input files table
+  
+  output$inputFilesTable <- DT::renderDataTable({
+    req()
+  })
+  
 
   # Census summary table
   output$censusSummaryTable <- renderTable({
@@ -1508,7 +1529,7 @@ server <- function(input, output, session) {
 
     return(summary_df)
   })
-
+  
   # Census data table
   output$censusDataTable <- DT::renderDataTable({
     req(censusData())
