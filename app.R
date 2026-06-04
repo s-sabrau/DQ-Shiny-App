@@ -173,50 +173,19 @@ ui <- fluidPage(
              tabPanel("Data Upload",
                       sidebarLayout(
                         sidebarPanel(
-                          radioButtons("data_source", "Data Source:",
-                                       choices = c("File (CSV/JSON)" = "file",
-                                                   "FHIR (HAPI Test Server)" = "fhir",
-                                                   "Census data" = "census")
-                          ),
-                          conditionalPanel(
-                            "input.data_source=='file'",
-                            h4("Upload Files"),
-                            fileInput("dataFiles", "Select CSV or JSON Files",
-                                      accept = c(".csv", ".json"), multiple = TRUE),
-                            uiOutput("mappingUI")
-                          ),
-                          conditionalPanel(
-                            "input.data_source=='fhir'",
-                            h4("FHIR Settings"),
-                            radioButtons("fhir_input_type", "FHIR Input Type:",
-                                         choices = c("API Request" = "api", "File Upload" = "file"),
-                                         selected = "api"),
-                            conditionalPanel(
-                              "input.fhir_input_type=='api'",
-                              textInput("fhir_url", "Server URL:",
-                                        value = "http://hapi.fhir.org/baseR4"),
-                              numericInput("max_bundles", "Max Bundles:",
-                                           value = 10, min = 1, step = 1),
-                              actionButton("load_fhir", "Load FHIR Data")
-                            ),
-                            conditionalPanel(
-                              "input.fhir_input_type=='file'",
-                              fileInput("fhirFiles", "Select FHIR JSON Files",
-                                        accept = c(".json"), multiple = TRUE)
-                            ),
-                            uiOutput("fhirResourceTypeUI"),
-                            uiOutput("fhirMappingUI")
-                          ),
-                          conditionalPanel(
-                            "input.data_source=='census'",
-                            h4("Upload census files"),
-                            fileInput("censusFile", "Select census JSON files",
-                                      accept = c(".json"), multiple = TRUE)
-                          )
+                          h4("Upload Files"),
+                          fileInput("newFiles", "Add Files",
+                                    accept = c(".csv", ".json"), multiple = TRUE),
+                          hr(),
+                          uiOutput("fileListUI"),
+                          actionButton("removeSelected", "Remove Selected",
+                                       class = "btn btn-danger",
+                                       style = "margin-top: 10px; width: 100%;")
                         ),
                         mainPanel(
-                          h4("Uploaded / Loaded Datasets"),
-                          span("Laden Sie ihre Datein in den entsprechenden Kategorien hoch. FHIR BLAZE server können über den entsprechenden Input angesprochen werden."),
+                          h4("Uploaded Datasets"),
+                          span("Upload your files and assign each a type. Files will be used in the corresponding tabs."),
+                          hr(),
                           tableOutput("dataList")
                         )
                       )
@@ -225,31 +194,20 @@ ui <- fluidPage(
              tabPanel("Census Data",
                       sidebarLayout(
                         sidebarPanel(
-                          h4("Upload Census Data"),
-                          fileInput("censusFile", "Select Census JSON File",
-                                    accept = c(".json"), multiple = FALSE),
-                          hr(),
+                          h4("Data Selection"),
+                          uiOutput("censusFileSelector"),
+                          uiOutput("fhirFileSelector"),
                           h4("Visualization Options"),
                           selectInput("census_chart_type", "Chart Type:",
                                       choices = c("Grouped Bar Chart" = "grouped",
-                                                  "Stacked Bar Chart" = "stacked",
-                                                  "Dodged Bar Chart" = "dodged"),
+                                                  "Stacked Bar Chart" = "stacked"),
                                       selected = "grouped"),
                           checkboxInput("census_show_values", "Show Values on Bars", FALSE),
-                          sliderInput("census_alpha", "Transparency:",
-                                      min = 0.3, max = 1, value = 0.8, step = 0.1),
                           checkboxInput("census_log_scale", "Log Scale (Y-axis)", FALSE),
                           hr(),
                           downloadButton("downloadCensusData", "Download Census Data (JSON)"),
                           br(), br(),
                           downloadButton("downloadCensusPlot", "Download Plot (PNG)"),
-                          hr(),
-                          #upload fhir file
-                          h4("Upload FHIR file"),
-                          fileInput("fhirFile", "Select FHIR Bundle",
-                                    accept = c(".json"), multiple = FALSE),
-
-
                         ),
                         mainPanel(
                           h4("Census Population by Age Group and Gender"),
@@ -259,7 +217,13 @@ ui <- fluidPage(
                           tableOutput("censusSummaryTable"),
                           hr(),
                           h4("Raw Census Data"),
-                          DT::dataTableOutput("censusDataTable")
+                          DT::dataTableOutput("censusDataTable"),
+                          hr(),
+                          h4("FHIR Patient Data Summary"),
+                          tableOutput("fhirSummaryTable"),
+                          hr(),
+                          h4("Raw FHIR Patient Data"),
+                          DT::dataTableOutput("fhirDataTable")
                         )
                       )
              ),
@@ -267,10 +231,8 @@ ui <- fluidPage(
              tabPanel("FHIR in bins",
                 sidebarLayout(
                   sidebarPanel(
-                    h4("Upload FHIR Bundle"),
-                    fileInput("
-                              ", "Select FHIR JSON files",
-                              accept = c(".json"), multiple = TRUE),
+                    h4("Select FHIR Files"),
+                    uiOutput("fhirFileSelectorBinning"),
                     hr(),
                     h4("Category Selection"),
                     uiOutput("fhirResourceTypeUIBinning"),
@@ -280,14 +242,20 @@ ui <- fluidPage(
                       condition = "input.fhir_category_col_binning != null && input.fhir_category_col_binning != ''",
                       h4("Create the bins"),
                       radioButtons(
-                        "value_types", "What is the type of the values", c("Numeric" = "num", "Boolean" = "bool", "Text" = "text"), "text"),
+                        "value_types", "What is the type of the values",
+                        c("Numeric" = "num", "Boolean" = "bool", "Text" = "text"), "text"),
                       conditionalPanel(
                         condition = "input.value_types != null && input.value_types != 'bool'",
                         sliderInput("fhir_n_bins", "Number of bins:",
-                                  min = 1, max = 50, value = 5, step = 1)
-                      )
+                                    min = 1, max = 50, value = 5, step = 1)
+                      ),
+                      hr(),
+                      radioButtons("bins_display_mode", "Display as:",
+                                   choices = c("Absolute Counts" = "absolute",
+                                               "Percentages" = "percent"),
+                                   selected = "absolute")
                     ),
-                    uiOutput("fhirValuesUIBinning"),
+                    uiOutput("fhirValuesUIBinning")
                   ),
                   mainPanel(
                     h4("Visualisation of the fhir data in bins incoming"),
@@ -371,6 +339,10 @@ ui <- fluidPage(
   ) # navbarPage
 ) # fluidPage  # 4. Server logic
 server <- function(input, output, session) {
+
+  # 4.0 Manage file list
+  uploadedFiles <- reactiveVal(list())
+  lastCensusPlot <- reactiveVal(NULL)
 
   # 4.1 Load JSON data
   loadJsonData <- function(path) {
@@ -659,6 +631,36 @@ server <- function(input, output, session) {
   })
 
   # 4.3.2
+  output$censusFileSelector <- renderUI({
+    files <- uploadedFiles()
+    census_files <- Filter(function(f) f$type == "census", files)
+    if (length(census_files) == 0) {
+      p("No census files uploaded yet. Please upload in the Data Upload tab.",
+        style = "color:#999; font-size:12px;")
+    } else {
+      selectInput("selected_census_file", "Census File:",
+                  choices = setNames(
+                    sapply(census_files, `[[`, "path"),
+                    sapply(census_files, `[[`, "name")
+                  ))
+    }
+  })
+
+  output$fhirFileSelector <- renderUI({
+    files <- uploadedFiles()
+    fhir_files <- Filter(function(f) f$type == "fhir", files)
+    if (length(fhir_files) == 0) {
+      p("No FHIR files uploaded yet. Please upload in the Data Upload tab.",
+        style = "color:#999; font-size:12px;")
+    } else {
+      selectInput("selected_fhir_file", "FHIR File:",
+                  choices = setNames(
+                    sapply(fhir_files, `[[`, "path"),
+                    sapply(fhir_files, `[[`, "name")
+                  ))
+    }
+  })
+
   loadCensusData <- function(path) {
     tryCatch({
       census_json <- fromJSON(path, simplifyVector = FALSE)
@@ -929,39 +931,41 @@ server <- function(input, output, session) {
   # 4.5.1 List all uploaded files/requested data
   allDataUploads <- reactive({
     req(input$dataFiles, input$fhirFiles, input$fhirApiRequest, input$censusFiles)
-    
+
     json_files <- input$dataFiles
     fhir_bundles <- input$fhirFiles
     census_files <- input$censusFiles
     fhir_api <- input$fhirApiRequest
-    
-  })
-  
-  # 4.5.2 Aggregate uploaded/FHIR datasets
-  
-  allData <- reactive({
-    if (input$data_source == "file") {
-      # Existing file logic unchanged
-      req(input$dataFiles)
-      fps <- input$dataFiles$datapath
-      fns <- input$dataFiles$name
 
-      results <- lapply(seq_along(fps), function(i) {
-        ext <- tools::file_ext(fns[i])
+  })
+
+  # 4.5.2 Aggregate uploaded/FHIR datasets
+
+  allData <- reactive({
+    req(input$data_source)
+    files <- uploadedFiles()
+    csv_json_files <- Filter(function(f) f$type == "csv_json", files)
+
+    if (input$data_source == "file") {
+      if (length(csv_json_files) == 0) return(list())
+
+      results <- lapply(seq_along(csv_json_files), function(i) {
+        f   <- csv_json_files[[i]]
+        ext <- tools::file_ext(f$name)
 
         df <- tryCatch({
           switch(ext,
-                 "json" = loadJsonData(fps[i]),
-                 "csv"  = loadCsvData(fps[i], i),
+                 "json" = loadJsonData(f$path),
+                 "csv"  = loadCsvData(f$path, i),
                  NULL
           )
         }, error = function(e) {
-          warning(paste("Error processing file", fns[i], ":", e$message))
+          warning(paste("Error processing file", f$name, ":", e$message))
           NULL
         })
 
         if (!is.null(df) && nrow(df) > 0) {
-          list(name = fns[i], data = df)
+          list(name = f$name, data = df)
         } else {
           NULL
         }
@@ -970,13 +974,11 @@ server <- function(input, output, session) {
       results[!sapply(results, is.null)]
 
     } else if (input$data_source == "fhir") {
-      # FHIR data source handling
       fhir_data <- fhirRawData()
       if (!is.null(fhir_data) && length(fhir_data) > 0) {
         results <- list()
 
         if (input$fhir_input_type == "file") {
-          # For file uploads, filter by selected resource type
           req(input$fhir_category_col)
           req(input$fhir_resource_to_viz)
 
@@ -988,7 +990,8 @@ server <- function(input, output, session) {
             category_col <- input$fhir_category_col
 
             if (category_col %in% colnames(df)) {
-              df[[category_col]] <- ifelse(is.na(df[[category_col]]) | df[[category_col]] == "", "unknown", as.character(df[[category_col]]))
+              df[[category_col]] <- ifelse(is.na(df[[category_col]]) | df[[category_col]] == "",
+                                           "unknown", as.character(df[[category_col]]))
 
               result_df <- df %>%
                 count(Category = .data[[category_col]], name = "Count") %>%
@@ -1000,10 +1003,7 @@ server <- function(input, output, session) {
             }
           }
         } else {
-          # API logic - single combined dataset
-          if (!is.null(input$fhir_resource_to_viz) &&
-              !is.null(input$fhir_category_col)) {
-
+          if (!is.null(input$fhir_resource_to_viz) && !is.null(input$fhir_category_col)) {
             resource_key <- input$fhir_resource_to_viz
             if (resource_key %in% names(fhir_data)) {
               df <- fhir_data[[resource_key]]
@@ -1024,7 +1024,6 @@ server <- function(input, output, session) {
             }
           }
         }
-
         return(results)
       }
     }
@@ -1264,34 +1263,33 @@ server <- function(input, output, session) {
 
   #### Census data reactive
   censusData <- reactive({
-    req(input$censusFile)
-    census_df <- loadCensusData(input$censusFile$datapath)
+    req(input$selected_census_file)
+    census_df <- loadCensusData(input$selected_census_file)
     if (is.null(census_df)) {
-      showNotification("Failed to load census data. Please check the file format.", type = "error")
+      showNotification("Failed to load census data.", type = "error")
       return(NULL)
     }
-    census_df$Source <- "Census"          # ← NEW: tag the source
+    census_df$Source <- "Census"
     showNotification(paste("Loaded", nrow(census_df), "census records"), type = "message")
     return(census_df)
   })
 
   fhirPatientData <- reactive({
-    req(input$fhirFile)     # the fileInput("fhirFile", ...) already in the Census sidebar
-    req(censusData())       # need census age-group labels to bin into
+    req(censusData())
 
-    census_df          <- censusData()
-    census_age_labels  <- unique(census_df$Age)
+    census_df            <- censusData()
+    census_age_labels    <- unique(census_df$Age)
     census_gender_labels <- unique(census_df$Gender)
 
     tryCatch({
-      raw <- jsonlite::fromJSON(input$fhirFile$datapath, simplifyVector = FALSE)
+      req(input$selected_fhir_file)
+      raw <- jsonlite::fromJSON(input$selected_fhir_file, simplifyVector = FALSE)
 
-      # Accept both a plain Bundle and a list of entries
       entries <- NULL
       if (!is.null(raw$resourceType) && raw$resourceType == "Bundle") {
         entries <- raw$entry
       } else if (is.list(raw)) {
-        entries <- raw          # already a flat list of resources
+        entries <- raw
       }
 
       if (is.null(entries) || length(entries) == 0) {
@@ -1299,7 +1297,6 @@ server <- function(input, output, session) {
         return(NULL)
       }
 
-      # Extract Patient resources only
       patients <- Filter(function(e) {
         res <- if (!is.null(e$resource)) e$resource else e
         !is.null(res$resourceType) && res$resourceType == "Patient"
@@ -1310,7 +1307,6 @@ server <- function(input, output, session) {
         return(NULL)
       }
 
-      # Pull birthDate and gender from each patient
       records <- lapply(patients, function(e) {
         p      <- if (!is.null(e$resource)) e$resource else e
         bd     <- p$birthDate %||% NA_character_
@@ -1324,21 +1320,14 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE
       )
 
-      # Compute age in whole years from birthDate (format YYYY, YYYY-MM, YYYY-MM-DD)
       today <- Sys.Date()
 
       df$age_numeric <- sapply(df$birthDate, function(bd) {
         if (is.null(bd) || is.na(bd) || !nzchar(trimws(bd))) return(NA_real_)
 
         bd <- trimws(bd)
-
-
-
-        # Strip time component if present: "2017-09-05T22:00:00.000Z" → "2017-09-05"
         bd <- sub("T.*$", "", bd)
 
-        cat("bd:", paste0("[", bd, "]"), "\n")
-        # Pad partial ISO dates
         bd_padded <- if (nchar(bd) == 4)      paste0(bd, "-01-01")
         else if (nchar(bd) == 7) paste0(bd, "-01")
         else                     bd
@@ -1346,33 +1335,25 @@ server <- function(input, output, session) {
         dob <- tryCatch(as.Date(bd_padded), error = function(e) NA)
 
         if (is.null(dob) || length(dob) == 0 || is.na(dob)) return(NA_real_)
+        if (dob >= today || dob < as.Date("1900-01-01"))     return(NA_real_)
 
-        today <- Sys.Date()
-        if (dob >= today || dob < as.Date("1900-01-01")) return(NA_real_)
-
-        year_diff     <- as.numeric(format(today, "%Y")) - as.numeric(format(dob, "%Y"))
+        year_diff       <- as.numeric(format(today, "%Y")) - as.numeric(format(dob, "%Y"))
         birthday_passed <- format(today, "%m-%d") >= format(dob, "%m-%d")
         as.numeric(year_diff - ifelse(birthday_passed, 0L, 1L))
       })
 
-      # Bin into census age groups
-      df$Age <- bin_age_to_census_groups(df$age_numeric, census_age_labels)
-
-      # Map gender to census labels
+      df$Age    <- bin_age_to_census_groups(df$age_numeric, census_age_labels)
       df$Gender <- map_fhir_gender(df$gender, census_gender_labels)
-
-      # Drop rows where either Age or Gender could not be mapped
-      df <- df[!is.na(df$Age) & !is.na(df$Gender), ]
+      df        <- df[!is.na(df$Age) & !is.na(df$Gender), ]
 
       if (nrow(df) == 0) {
         showNotification(
-          "FHIR patients could not be matched to census Age/Gender groups. Check age labels.",
+          "FHIR patients could not be matched to census Age/Gender groups.",
           type = "warning"
         )
         return(NULL)
       }
 
-      # Aggregate: count patients per Age × Gender cell
       result <- df %>%
         dplyr::count(Age, Gender, name = "Count") %>%
         as.data.frame(stringsAsFactors = FALSE)
@@ -1388,8 +1369,6 @@ server <- function(input, output, session) {
       return(result)
 
     }, error = function(e) {
-      cat("ERROR MESSAGE:", conditionMessage(e), "\n")
-      cat("ERROR CALL:", deparse(conditionCall(e)), "\n")
       showNotification(paste("Error parsing FHIR bundle:", e$message), type = "error")
       return(NULL)
     })
@@ -1403,7 +1382,6 @@ server <- function(input, output, session) {
     fhir_df    <- fhirPatientData()     # NULL if no FHIR file uploaded yet — that's fine
 
     chart_type  <- input$census_chart_type
-    alpha       <- input$census_alpha
     show_values <- input$census_show_values
 
     # ── Combine census + FHIR (if available) ────────────────────────────────────
@@ -1446,14 +1424,21 @@ server <- function(input, output, session) {
       overlay_active <- FALSE
     }
 
+    plot_df <- plot_df %>%
+      group_by(Source) %>%
+      mutate(Percent = round(Count / sum(Count, na.rm = TRUE) * 100, 2)) %>%
+      ungroup()
+
+    age_order <- unique(plot_df$Age[order(as.numeric(sub("[-+].*", "", plot_df$Age)))])
+    plot_df$Age <- factor(plot_df$Age, levels = age_order)
     # ── Base ggplot ──────────────────────────────────────────────────────────────
-    p <- ggplot(plot_df, aes(x = Age, y = Count, fill = fill_group)) +
+    p <- ggplot(plot_df, aes(x = Age, y = Percent, fill = fill_group)) +
       theme_minimal(base_size = 14) +
       labs(
         title = if (overlay_active) "Population by Age Group and Gender  (Census vs FHIR)"
         else                "Population by Age Group and Gender",
         x     = "Age Group",
-        y     = "Population Count",
+        y = "Population (%)",
         fill  = if (overlay_active) "Gender \u00b7 Source" else "Gender"
       ) +
       theme(
@@ -1475,7 +1460,7 @@ server <- function(input, output, session) {
     if (chart_type == "grouped" || chart_type == "dodged") {
       p <- p + geom_bar(stat = "identity",
                         position = position_dodge(width = dodge_width),
-                        alpha = alpha,
+                        alpha = 1,
                         colour = "white", linewidth = 0.2)
       if (show_values) {
         p <- p + geom_text(aes(label = Count),
@@ -1484,13 +1469,28 @@ server <- function(input, output, session) {
       }
 
     } else if (chart_type == "stacked") {
-      # Stacked makes most sense per-source; switch to faceted display
-      p <- p +
-        geom_bar(stat = "identity", position = "stack", alpha = alpha) +
-        {if (overlay_active) facet_wrap(~Source, ncol = 2) else NULL}
+      p <- ggplot(plot_df, aes(x = Age, y = Percent, fill = fill_group)) +
+        theme_minimal(base_size = 14) +
+        labs(
+          title = if (overlay_active) "Population by Age Group and Gender  (Census vs FHIR)"
+          else "Population by Age Group and Gender",
+          x     = "Age Group",
+          y     = "Population (%)",
+          fill  = if (overlay_active) "Gender · Source" else "Gender"
+        ) +
+        theme(
+          axis.text.x  = element_text(angle = 45, hjust = 1),
+          legend.position = "bottom",
+          plot.title   = element_text(hjust = 0.5, face = "bold", size = 16)
+        ) +
+        geom_bar(stat = "identity", position = "stack", alpha = 1,
+                 colour = "white", linewidth = 0.2) +
+        {if (overlay_active) facet_wrap(~Source, ncol = 2) else NULL} +
+        {if (overlay_active) scale_fill_manual(values = fill_vals)
+          else scale_fill_brewer(palette = "Set2")}
 
       if (show_values) {
-        p <- p + geom_text(aes(label = Count),
+        p <- p + geom_text(aes(label = paste0(Percent, "%")),
                            position = position_stack(vjust = 0.5), size = 2.8)
       }
     }
@@ -1501,15 +1501,16 @@ server <- function(input, output, session) {
         labels = scales::comma
       )
     }
+    lastCensusPlot(p)
     return(p)
   })
-  
+
   # Input files table
-  
+
   output$inputFilesTable <- DT::renderDataTable({
     req()
   })
-  
+
 
   # Census summary table
   output$censusSummaryTable <- renderTable({
@@ -1529,17 +1530,62 @@ server <- function(input, output, session) {
 
     return(summary_df)
   })
-  
+
   # Census data table
   output$censusDataTable <- DT::renderDataTable({
     req(censusData())
 
+    df <- censusData()
+
+    # Sort age groups numerically
+    age_order <- unique(df$Age[order(as.numeric(sub("[-+].*", "", df$Age)))])
+    df$Age <- factor(df$Age, levels = age_order)
+    df <- df[order(df$Age), ]
+    df$Age <- as.character(df$Age)  # convert back so DT renders it cleanly
+
     DT::datatable(
-      censusData(),
+      df,
       options = list(
         pageLength = 25,
         scrollX = TRUE,
-        order = list(list(0, 'asc'), list(1, 'asc'))
+        order = list()  # ← remove default ordering so our pre-sort is respected
+      ),
+      rownames = FALSE
+    )
+  })
+
+  output$fhirSummaryTable <- renderTable({
+    req(fhirPatientData())
+
+    df <- fhirPatientData()
+
+    df %>%
+      group_by(Gender) %>%
+      summarise(
+        Total_Patients = sum(Count, na.rm = TRUE),
+        Age_Groups = n_distinct(Age),
+        Average_per_Group = round(mean(Count, na.rm = TRUE), 0)
+      ) %>%
+      as.data.frame()
+  })
+
+  output$fhirDataTable <- DT::renderDataTable({
+    req(fhirPatientData())
+
+    df <- fhirPatientData()
+
+    # Sort age groups numerically
+    age_order <- unique(df$Age[order(as.numeric(sub("[-+].*", "", df$Age)))])
+    df$Age <- factor(df$Age, levels = age_order)
+    df <- df[order(df$Age), ]
+    df$Age <- as.character(df$Age)
+
+    DT::datatable(
+      df,
+      options = list(
+        pageLength = 25,
+        scrollX = TRUE,
+        order = list()
       ),
       rownames = FALSE
     )
@@ -1562,47 +1608,8 @@ server <- function(input, output, session) {
       paste0("census_plot_", Sys.Date(), ".png")
     },
     content = function(file) {
-      req(censusData())
-
-      df <- censusData()
-      chart_type <- input$census_chart_type
-      alpha <- input$census_alpha
-      show_values <- input$census_show_values
-
-      p <- ggplot(df, aes(x = Age, y = Count, fill = Gender)) +
-        theme_minimal(base_size = 14) +
-        labs(
-          title = "Population by Age Group and Gender",
-          x = "Age Group",
-          y = "Population Count",
-          fill = "Gender"
-        ) +
-        theme(
-          axis.text.x = element_text(angle = 45, hjust = 1),
-          legend.position = "bottom",
-          plot.title = element_text(hjust = 0.5, face = "bold", size = 16)
-        )
-
-      if (chart_type == "grouped" || chart_type == "dodged") {
-        p <- p + geom_bar(stat = "identity",
-                          position = position_dodge(width = 0.9),
-                          alpha = alpha)
-        if (show_values) {
-          p <- p + geom_text(aes(label = Count),
-                             position = position_dodge(width = 0.9),
-                             vjust = -0.5, size = 3)
-        }
-      } else if (chart_type == "stacked") {
-        p <- p + geom_bar(stat = "identity", position = "stack", alpha = alpha)
-        if (show_values) {
-          p <- p + geom_text(aes(label = Count),
-                             position = position_stack(vjust = 0.5), size = 3)
-        }
-      }
-
-      p <- p + scale_fill_brewer(palette = "Set2")
-
-      ggsave(file, plot = p, width = 12, height = 8, dpi = 300)
+      req(lastCensusPlot())
+      ggsave(file, plot = lastCensusPlot(), width = 12, height = 8, dpi = 300)
     }
   )
 
@@ -1799,39 +1806,114 @@ server <- function(input, output, session) {
     }
   })
 
-  # 4.16 FHIR data binning and aggregation
+  # 4.16 handle file additions
+  observeEvent(input$newFiles, {
+    req(input$newFiles)
+    current <- uploadedFiles()
+
+    new_entries <- lapply(seq_len(nrow(input$newFiles)), function(i) {
+      list(
+        name = input$newFiles$name[i],
+        path = input$newFiles$datapath[i],
+        type = "csv_json"  # default type
+      )
+    })
+
+    # Avoid duplicates by name
+    existing_names <- sapply(current, `[[`, "name")
+    new_entries <- Filter(function(e) !e$name %in% existing_names, new_entries)
+
+    uploadedFiles(c(current, new_entries))
+  })
+
+  # 4.17 handlie file removal
+  observeEvent(input$removeSelected, {
+    current <- uploadedFiles()
+
+    # Collect which checkboxes are checked
+    to_remove <- which(sapply(seq_along(current), function(i) {
+      isTRUE(input[[paste0("file_select_", i)]])
+    }))
+
+    if (length(to_remove) > 0) {
+      uploadedFiles(current[-to_remove])
+    }
+  })
+
+  # 4.19 Render file list UI
+  output$fileListUI <- renderUI({
+    files <- uploadedFiles()
+    if (length(files) == 0) {
+      return(p("No files uploaded yet.", style = "color: #999;"))
+    }
+
+    tagList(
+      h4("Uploaded Files"),
+      lapply(seq_along(files), function(i) {
+        f <- files[[i]]
+        div(style = "display:flex; align-items:center; gap:10px; margin-bottom:8px;
+                   padding:8px; border:1px solid #DDD; border-radius:4px;",
+            checkboxInput(paste0("file_select_", i), label = NULL, value = FALSE),
+            div(style = "flex:1; font-size:13px; word-break:break-all;", f$name),
+            selectInput(paste0("file_type_", i), label = NULL,
+                        choices = c("CSV/JSON" = "csv_json",
+                                    "Census"   = "census",
+                                    "FHIR"     = "fhir"),
+                        selected = f$type,
+                        width = "130px")
+        )
+      })
+    )
+  })
+
+  # 4.20 Sync type changes
+  observe({
+    files <- uploadedFiles()
+    if (length(files) == 0) return()
+
+    updated <- lapply(seq_along(files), function(i) {
+      type_val <- input[[paste0("file_type_", i)]]
+      if (!is.null(type_val)) files[[i]]$type <- type_val
+      files[[i]]
+    })
+
+    uploadedFiles(updated)
+  })
+
+  # 4.18 FHIR data binning and aggregation
+  output$fhirFileSelectorBinning <- renderUI({
+    files <- uploadedFiles()
+    fhir_files <- Filter(function(f) f$type == "fhir", files)
+    if (length(fhir_files) == 0) {
+      p("No FHIR files uploaded yet. Please upload in the Data Upload tab.",
+        style = "color:#999; font-size:12px;")
+    } else {
+      checkboxGroupInput("selected_fhir_files_binning", "Select FHIR Files:",
+                         choices = setNames(
+                           sapply(fhir_files, `[[`, "path"),
+                           sapply(fhir_files, `[[`, "name")
+                         ))
+    }
+  })
+
   fhirDataBinning <- reactive({
-    req(input$fhirFilesBinning)
+    req(input$selected_fhir_files_binning)
+
+    selected_paths <- input$selected_fhir_files_binning
+    files <- uploadedFiles()
+    fhir_files <- Filter(function(f) f$type == "fhir" && f$path %in% selected_paths, files)
+
+    if (length(fhir_files) == 0) return(list())
 
     all_files_data <- list()
-    fps <- input$fhirFilesBinning$datapath
-    fns <- input$fhirFilesBinning$name
-
-    for (i in seq_along(fps)) {
-      file_data_list <- loadFhirFile(fps[i], fns[i])
+    for (f in fhir_files) {
+      file_data_list <- loadFhirFile(f$path, f$name)
       if (!is.null(file_data_list) && length(file_data_list) > 0) {
         all_files_data <- c(all_files_data, file_data_list)
       }
     }
 
     return(all_files_data)
-  })
-
-  output$fhirResourceTypeUIBinning <- renderUI({
-    fhir_data <- fhirDataBinning()
-    if (!is.null(fhir_data)) {
-      available_resources <- names(fhir_data)
-      if (length(available_resources) > 0) {
-        resource_types <- unique(sapply(available_resources, function(x) {
-          parts <- strsplit(x, "_")[[1]]
-          if (length(parts) > 1) parts[length(parts)] else x
-        }))
-
-        selectInput("fhir_resource_to_viz_binning", "Resource Type to Visualize:",
-                    choices = resource_types,
-                    selected = resource_types[1])
-      }
-    }
   })
 
   output$fhirMappingUIBinning <- renderUI({
@@ -1892,7 +1974,7 @@ server <- function(input, output, session) {
           inputId = paste0("bin_", i),
           label = paste("Bin", i, "values:"),
           choices = uniqueValues,
-          multiple = TRUE
+          multiple = FALSE
         )
       }
     })
@@ -1905,57 +1987,141 @@ server <- function(input, output, session) {
 
   output$plotBins <- renderPlot({
     fhir_data <- fhirDataBinning()
-    req(input$fhir_category_col_binning, input$fhir_resource_to_viz_binning, input$fhir_n_bins, input$value_types)
+    req(input$fhir_category_col_binning, input$fhir_resource_to_viz_binning,
+        input$fhir_n_bins, input$value_types, input$selected_fhir_files_binning)
 
     selected_resource_type <- input$fhir_resource_to_viz_binning
-    selected_attribute <- input$fhir_category_col_binning
-    n_bins <- input$fhir_n_bins
-    value_type <-input$value_types
+    selected_attribute     <- input$fhir_category_col_binning
+    n_bins                 <- input$fhir_n_bins
+    value_type             <- input$value_types
+    display_mode           <- input$bins_display_mode
 
-    # Get all data from matching datasets
-    matching_datasets <- names(fhir_data)[grepl(paste0("_", selected_resource_type, "$"), names(fhir_data))]
+    files     <- uploadedFiles()
+    fhir_files <- Filter(function(f) f$type == "fhir" &&
+                           f$path %in% input$selected_fhir_files_binning, files)
+    file_name_map <- setNames(
+      sapply(fhir_files, `[[`, "name"),
+      sapply(fhir_files, `[[`, "path")
+    )
+
+    # Get all data from matching datasets, tagged by source file
+    matching_datasets <- names(fhir_data)[grepl(paste0("_", selected_resource_type, "$"),
+                                                names(fhir_data))]
+
     all_data <- do.call(rbind, lapply(matching_datasets, function(dataset_name) {
       df <- fhir_data[[dataset_name]]
       if (selected_attribute %in% colnames(df)) {
-        data.frame(value = df[[selected_attribute]], stringsAsFactors = FALSE)
+        # Extract source file path from dataset name
+        # dataset_name format is "filename_resourcetype"
+        source_name <- dataset_name
+        for (path in names(file_name_map)) {
+          fname <- tools::file_path_sans_ext(file_name_map[path])
+          if (grepl(fname, dataset_name, fixed = TRUE)) {
+            source_name <- file_name_map[path]
+            break
+          }
+        }
+        data.frame(
+          value  = df[[selected_attribute]],
+          source = source_name,
+          stringsAsFactors = FALSE
+        )
       }
     }))
+
+    if (is.null(all_data) || nrow(all_data) == 0) return(NULL)
 
     # Assign each value to a bin
     all_data$bin <- NA_character_
     for (i in 1:n_bins) {
-      if(value_type == "text"){
+      if (value_type == "text") {
         bin_values <- input[[paste0("bin_", i)]]
         if (!is.null(bin_values) && length(bin_values) > 0) {
           all_data$bin[all_data$value %in% bin_values] <- paste("Bin", i)
         }
-      } else if (value_type == "num"){
+      } else if (value_type == "num") {
         bin_max <- input[[paste0("bin_", i)]]
-        bin_min <- input[[paste0("bin_", i-1)]] %||% -Inf
+        bin_min <- input[[paste0("bin_", i - 1)]] %||% -Inf
         all_data$bin[all_data$value <= bin_max & all_data$value > bin_min] <- paste("Bin", i)
-      } else if (value_type == "bool"){
+      } else if (value_type == "bool") {
         if (i == 1) all_data$bin[all_data$value == FALSE] <- paste("Bin", i)
-        if (i == 2) all_data$bin[all_data$value == TRUE] <- paste("Bin", i)
+        if (i == 2) all_data$bin[all_data$value == TRUE]  <- paste("Bin", i)
       }
     }
 
-    # Remove unassigned values
     all_data <- all_data[!is.na(all_data$bin), ]
+    if (nrow(all_data) == 0) return(NULL)
 
-    # Count per bin
-    bin_counts <- as.data.frame(table(all_data$bin))
-    names(bin_counts) <- c("Bin", "Count")
+    # Count per bin per source
+    # Count per bin per source
+    bin_counts <- all_data %>%
+      count(source, bin, name = "Count") %>%
+      as.data.frame()
 
-    # Plot
-    ggplot(bin_counts, aes(x = Bin, y = Count, fill = Bin)) +
-      geom_bar(stat = "identity") +
+    # Calculate percentages within each source
+    bin_counts <- bin_counts %>%
+      group_by(source) %>%
+      mutate(Percent = round(Count / sum(Count) * 100, 2)) %>%
+      ungroup()
+
+    # Truncate labels to 15 characters
+    truncate_label <- function(x, max_chars = 15) {
+      ifelse(nchar(x) > max_chars, paste0(substr(x, 1, max_chars), "..."), x)
+    }
+
+    # Build bin labels from selected values
+    bin_labels <- setNames(sapply(1:n_bins, function(i) {
+      if (value_type == "text") {
+        vals <- input[[paste0("bin_", i)]]
+        if (!is.null(vals) && length(vals) > 0) truncate_label(vals) else paste("Bin", i)
+      } else if (value_type == "num") {
+        bin_max <- input[[paste0("bin_", i)]]
+        bin_min <- input[[paste0("bin_", i - 1)]] %||% -Inf
+        if (is.infinite(bin_min)) paste0("≤ ", bin_max) else paste0(bin_min, " – ", bin_max)
+      } else if (value_type == "bool") {
+        if (i == 1) "False" else "True"
+      }
+    }), paste0("Bin ", 1:n_bins))
+
+    # Apply labels
+    bin_counts$bin_label <- bin_labels[bin_counts$bin]
+    bin_counts$bin_label <- factor(bin_counts$bin_label, levels = bin_labels)
+
+    y_var   <- if (display_mode == "percent") "Percent" else "Count"
+    y_label <- if (display_mode == "percent") "Percentage (%)" else "Count"
+
+    ggplot(bin_counts, aes(x = bin_label, y = .data[[y_var]], fill = bin_label)) +
+      geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
       theme_minimal(base_size = 14) +
       labs(
         title = paste("Distribution of", selected_attribute, "across bins"),
-        x = "Bin",
-        y = "Count"
+        x     = "Bin",
+        y     = y_label,
+        fill  = "Bin"
       ) +
-      theme(legend.position = "none")
+      scale_fill_brewer(palette = "Set2") +
+      facet_wrap(~source, ncol = length(unique(bin_counts$source))) +
+      theme(
+        legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1)
+      )
+  })
+
+  output$fhirResourceTypeUIBinning <- renderUI({
+    fhir_data <- fhirDataBinning()
+    if (is.null(fhir_data) || length(fhir_data) == 0) return(NULL)
+
+    available_resources <- names(fhir_data)
+    if (length(available_resources) > 0) {
+      resource_types <- unique(sapply(available_resources, function(x) {
+        parts <- strsplit(x, "_")[[1]]
+        if (length(parts) > 1) parts[length(parts)] else x
+      }))
+
+      selectInput("fhir_resource_to_viz_binning", "Resource Type:",
+                  choices = resource_types,
+                  selected = resource_types[1])
+    }
   })
 }
 # end server
