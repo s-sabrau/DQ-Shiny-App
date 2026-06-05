@@ -251,9 +251,9 @@ ui <- fluidPage(
                       ),
                       hr(),
                       radioButtons("bins_display_mode", "Display as:",
-                                   choices = c("Absolute Counts" = "absolute",
-                                               "Percentages" = "percent"),
-                                   selected = "absolute")
+                                   choices = c("Percentages" = "percent",
+                                               "Absolute Counts" = "absolute"),
+                                   selected = "percent")
                     ),
                     uiOutput("fhirValuesUIBinning")
                   ),
@@ -265,25 +265,38 @@ ui <- fluidPage(
              ),
              # -- Visualization Tab --
              tabPanel("Visualization",
-                      fluidRow(
-                        column(12,
-                               div(style = "margin-bottom: 15px;",
-                                   actionButton("arrangeSideBySide", "Arrange Side by Side",
-                                                class = "btn btn-primary"),
-                                   actionButton("stackPlots", "Stack All Plots",
-                                                class = "btn btn-secondary"),
-                                   br(), br(),
-                                   selectInput("selectedPlotsToStack",
-                                               "Select Two Plots to Stack:", choices = NULL, multiple = TRUE,
-                                               width = "300px"),
-                                   actionButton("stackSelectedPlots", "Stack Selected Plots",
-                                                class = "btn btn-info")
-                               ),
-                               div(
-                                 id = "plot_area",
-                                 style = "position:relative; height:800px; border:1px solid #DDD; overflow:auto; padding:10px;",
-                                 uiOutput("plotsUI")
-                               )
+                      sidebarLayout(
+                        sidebarPanel(
+                          h4("Data Sources"),
+                          uiOutput("vizSourceSelector"),
+                          hr(),
+                          h4("Binning"),
+                          radioButtons("viz_bin_type", "Use bins from:",
+                                       choices = c("Census (Age × Gender)" = "census",
+                                                   "FHIR in Bins"          = "fhir_bins"),
+                                       selected = "census"),
+                          hr(),
+                          h4("Display"),
+                          radioButtons("viz_display_mode", "Display as:",
+                                       choices = c("Percentages"     = "percent",
+                                                  "Absolute Counts" = "absolute"),
+                                       selected = "percent"),
+                          radioButtons("x_axis_display_mode", "X-Axis mode:",
+                                       choices = c("As selected bin source"     = "uniform",
+                                                   "Minimal" = "individual"),
+                                       selected = "uniform"),
+                          radioButtons("viz_layout_mode", "Layout:",
+                                       choices = c("Individual plots" = "individual",
+                                                   "Overlay"          = "overlay"),
+                                       selected = "individual"),
+                          conditionalPanel(
+                            condition = "input.viz_layout_mode == 'overlay'",
+                            sliderInput("viz_overlay_alpha", "Transparency:",
+                                        min = 0.1, max = 1, value = 0.5, step = 0.05)
+                          )
+                        ),
+                        mainPanel(
+                          uiOutput("vizPlotsUI")
                         )
                       )
              ),
@@ -665,87 +678,121 @@ server <- function(input, output, session) {
     tryCatch({
       census_json <- fromJSON(path, simplifyVector = FALSE)
 
-      # Navigate to stratum list
-      stratum_list <- NULL
-
-      if (!is.null(census_json$group)) {
-        if (is.list(census_json$group) && length(census_json$group) > 0) {
-          first_group <- if(is.list(census_json$group[[1]])) {
-            census_json$group[[1]]
-          } else {
-            census_json$group
-          }
-
-          if (!is.null(first_group$stratifier)) {
-            if (is.list(first_group$stratifier) && length(first_group$stratifier) > 0) {
-              first_stratifier <- if(is.list(first_group$stratifier[[1]])) {
-                first_group$stratifier[[1]]
-              } else {
-                first_group$stratifier
-              }
-              stratum_list <- first_stratifier$stratum
-            }
-          }
-        }
-      }
-
-      if (is.null(stratum_list) || length(stratum_list) == 0) {
-        warning("No stratum data found in census file")
+      if (is.null(census_json$group) || length(census_json$group) == 0) {
+        warning("No group data found in census file")
         return(NULL)
       }
 
-      # Extract age and gender from each stratum
-      census_data <- lapply(stratum_list, function(stratum) {
-        components <- stratum$component
+      first_group <- if (is.list(census_json$group[[1]])) {
+        census_json$group[[1]]
+      } else {
+        census_json$group
+      }
 
-        if (is.null(components) || length(components) < 2) {
-          return(NULL)
-        }
+      if (is.null(first_group$stratifier) || length(first_group$stratifier) == 0) {
+        warning("No stratifier found in census file")
+        return(NULL)
+      }
 
-        # Extract age (component 1) and gender (component 2)
-        age <- if (!is.null(components[[1]]$value$text)) {
-          components[[1]]$value$text
-        } else {
-          NA
-        }
+      stratifiers <- first_group$stratifier
 
-        gender <- if (!is.null(components[[2]]$value$text)) {
-          components[[2]]$value$text
-        } else {
-          NA
-        }
+      # ── Detect format ────────────────────────────────────────────────────────────
+      # Composite: stratifier entries have $stratum[[1]]$component
+      # Separate:  stratifier entries have $code with LOINC codes for age/gender
+      first_stratum <- stratifiers[[1]]$stratum[[1]]
+      is_composite  <- !is.null(first_stratum$component)
 
-        # Extract count from measureScore or population
-        count <- 0
-        if (!is.null(stratum$measureScore$value)) {
-          count <- as.numeric(stratum$measureScore$value)
-        } else if (!is.null(stratum$population)) {
-          pop_list <- stratum$population
-          if (is.list(pop_list) && length(pop_list) > 0) {
-            count <- as.numeric(pop_list[[1]]$count %||% 0)
+      if (is_composite) {
+        # ── Composite format (existing logic) ──────────────────────────────────────
+        stratum_list <- stratifiers[[1]]$stratum
+
+        census_data <- lapply(stratum_list, function(stratum) {
+          components <- stratum$component
+          if (is.null(components) || length(components) < 2) return(NULL)
+
+          age    <- components[[1]]$value$text %||% NA
+          gender <- components[[2]]$value$text %||% NA
+
+          count <- 0
+          if (!is.null(stratum$measureScore$value)) {
+            count <- as.numeric(stratum$measureScore$value)
+          } else if (!is.null(stratum$population)) {
+            count <- as.numeric(stratum$population[[1]]$count %||% 0)
           }
+
+          data.frame(Age = age, Gender = gender, Count = count,
+                     stringsAsFactors = FALSE)
+        })
+
+        census_df <- do.call(rbind, Filter(Negate(is.null), census_data))
+
+      } else {
+        # ── Separate format: two stratifiers, one for gender, one for age ──────────
+        # Identify which stratifier is gender and which is age by LOINC code
+        get_loinc <- function(strat) {
+          tryCatch({
+            strat$code[[1]]$coding[[1]]$code
+          }, error = function(e) NA_character_)
         }
 
-        data.frame(
-          Age = age,
-          Gender = gender,
-          Count = count,
-          stringsAsFactors = FALSE
-        )
-      })
+        gender_strat <- NULL
+        age_strat    <- NULL
 
-      # Combine all data frames
-      census_df <- do.call(rbind, Filter(Negate(is.null), census_data))
+        for (s in stratifiers) {
+          loinc <- get_loinc(s)
+          if (!is.na(loinc) && loinc == "99502-7") gender_strat <- s  # Recorded sex or gender
+          if (!is.na(loinc) && loinc == "46251-5") age_strat    <- s  # Age group
+        }
+
+        # Fallback: if LOINC codes not found, use position (first=gender, second=age)
+        if (is.null(gender_strat)) gender_strat <- stratifiers[[1]]
+        if (is.null(age_strat))    age_strat    <- stratifiers[[2]]
+
+        # Extract genders
+        genders <- lapply(gender_strat$stratum, function(s) {
+          list(
+            value = s$value$text %||% NA,
+            count = as.numeric(s$population[[1]]$count %||% 0)
+          )
+        })
+
+        # Extract age groups
+        ages <- lapply(age_strat$stratum, function(s) {
+          list(
+            value = s$value$text %||% NA,
+            count = as.numeric(s$population[[1]]$count %||% 0)
+          )
+        })
+
+        total <- sum(sapply(genders, `[[`, "count"), na.rm = TRUE)
+
+        # Cross-tabulate: distribute counts proportionally across age × gender
+        # Since separate format has no cross-tabulation, estimate each cell as:
+        # count(age_i) * count(gender_j) / total
+        rows <- lapply(ages, function(a) {
+          lapply(genders, function(g) {
+            estimated_count <- if (total > 0) {
+              round(a$count * g$count / total)
+            } else 0
+            data.frame(
+              Age    = a$value,
+              Gender = g$value,
+              Count  = estimated_count,
+              stringsAsFactors = FALSE
+            )
+          })
+        })
+
+        census_df <- do.call(rbind, unlist(rows, recursive = FALSE))
+      }
 
       if (is.null(census_df) || nrow(census_df) == 0) {
         warning("No valid census data extracted")
         return(NULL)
       }
 
-      # Clean data
       census_df <- census_df[!is.na(census_df$Age) & !is.na(census_df$Gender), ]
       census_df$Count <- as.numeric(census_df$Count)
-
       return(census_df)
 
     }, error = function(e) {
@@ -2122,6 +2169,395 @@ server <- function(input, output, session) {
                   choices = resource_types,
                   selected = resource_types[1])
     }
+  })
+
+  output$vizSourceSelector <- renderUI({
+    files <- uploadedFiles()
+    if (length(files) == 0) {
+      return(p("No files uploaded yet.", style = "color:#999; font-size:12px;"))
+    }
+
+    checkboxGroupInput("viz_selected_sources", "Select Sources:",
+                       choices  = setNames(
+                         sapply(files, `[[`, "path"),
+                         sapply(files, `[[`, "name")
+                       ),
+                       selected = sapply(files, `[[`, "path"))
+  })
+
+  vizData <- reactive({
+    req(input$viz_selected_sources)
+
+    files        <- uploadedFiles()
+    selected     <- Filter(function(f) f$path %in% input$viz_selected_sources, files)
+    bin_type     <- input$viz_bin_type
+    display_mode <- input$viz_display_mode
+
+    results <- lapply(selected, function(f) {
+
+      if (bin_type == "census") {
+        # Use census Age x Gender bins
+        # Load census reference directly — independent of Census tab selector
+        all_files  <- uploadedFiles()
+        census_files <- Filter(function(f) f$type == "census", all_files)
+
+        census_ref <- if (!is.null(input$selected_census_file)) {
+          loadCensusData(input$selected_census_file)
+        } else if (length(census_files) > 0) {
+          loadCensusData(census_files[[1]]$path)
+        } else {
+          NULL
+        }
+
+        if (is.null(census_ref)) return(NULL)
+
+        census_age_labels    <- unique(census_ref$Age)
+        census_gender_labels <- unique(census_ref$Gender)
+        census_age_labels    <- unique(census_ref$Age)
+        census_gender_labels <- unique(census_ref$Gender)
+
+        tryCatch({
+          if (f$type == "census") {
+            df <- loadCensusData(f$path)
+            if (is.null(df)) return(NULL)
+            df$Source <- f$name
+
+            # Calculate percent within this source
+            df <- df %>%
+              mutate(x_label = paste(Age, Gender, sep = " · ")) %>%
+              group_by(x_label) %>%
+              summarise(Count = sum(Count), .groups = "drop")
+
+          } else if (f$type == "fhir") {
+            raw     <- jsonlite::fromJSON(f$path, simplifyVector = FALSE)
+            entries <- if (!is.null(raw$resourceType) && raw$resourceType == "Bundle") raw$entry else raw
+            if (is.null(entries) || length(entries) == 0) return(NULL)
+
+            patients <- Filter(function(e) {
+              res <- if (!is.null(e$resource)) e$resource else e
+              !is.null(res$resourceType) && res$resourceType == "Patient"
+            }, entries)
+            if (length(patients) == 0) return(NULL)
+
+            records <- lapply(patients, function(e) {
+              p <- if (!is.null(e$resource)) e$resource else e
+              list(birthDate = as.character(p$birthDate %||% NA_character_),
+                   gender    = as.character(p$gender    %||% NA_character_))
+            })
+
+            df <- data.frame(
+              birthDate = sapply(records, `[[`, "birthDate"),
+              gender    = sapply(records, `[[`, "gender"),
+              stringsAsFactors = FALSE
+            )
+
+            today <- Sys.Date()
+            df$age_numeric <- sapply(df$birthDate, function(bd) {
+              if (is.null(bd) || is.na(bd) || !nzchar(trimws(bd))) return(NA_real_)
+              bd <- sub("T.*$", "", trimws(bd))
+              bd_padded <- if (nchar(bd) == 4) paste0(bd, "-01-01")
+              else if (nchar(bd) == 7) paste0(bd, "-01")
+              else bd
+              dob <- tryCatch(as.Date(bd_padded), error = function(e) NA)
+              if (is.na(dob) || dob >= today || dob < as.Date("1900-01-01")) return(NA_real_)
+              year_diff       <- as.numeric(format(today, "%Y")) - as.numeric(format(dob, "%Y"))
+              birthday_passed <- format(today, "%m-%d") >= format(dob, "%m-%d")
+              as.numeric(year_diff - ifelse(birthday_passed, 0L, 1L))
+            })
+
+            df$Age    <- bin_age_to_census_groups(df$age_numeric, census_age_labels)
+            df$Gender <- map_fhir_gender(df$gender, census_gender_labels)
+            df        <- df[!is.na(df$Age) & !is.na(df$Gender), ]
+            if (nrow(df) == 0) return(NULL)
+
+            df <- df %>%
+              dplyr::count(Age, Gender, name = "Count") %>%
+              mutate(x_label = paste(Age, Gender, sep = " · "))
+
+          } else {
+            return(NULL)
+          }
+
+          # Sort x_label by age numerically
+          age_order <- unique(df$x_label[order(as.numeric(sub("[-+].*", "",
+                                                              sub(" · .*", "", df$x_label))))])
+          df$x_label <- factor(df$x_label, levels = age_order)
+
+          if (display_mode == "percent") {
+            df <- df %>% mutate(y_val = round(Count / sum(Count) * 100, 2))
+          } else {
+            df <- df %>% mutate(y_val = Count)
+          }
+
+          # Full label set for uniform x-axis
+          all_x_labels <-  if (bin_type == "census") {
+            age_order <- unique(census_ref$Age[order(as.numeric(sub("[-+].*", "", census_ref$Age)))])
+            genders   <- sort(unique(census_ref$Gender))
+            as.vector(t(outer(age_order, genders, paste, sep = " · ")))
+          } else {
+            # All bin labels from FHIR bins
+            req(input$fhir_n_bins, input$value_types)
+            n_bins     <- input$fhir_n_bins
+            value_type <- input$value_types
+            truncate_label <- function(x, max_chars = 15) {
+              ifelse(nchar(x) > max_chars, paste0(substr(x, 1, max_chars), "..."), x)
+            }
+            sapply(1:n_bins, function(i) {
+              if (value_type == "text") {
+                vals <- input[[paste0("bin_", i)]]
+                if (!is.null(vals) && length(vals) > 0) truncate_label(vals) else paste("Bin", i)
+              } else if (value_type == "num") {
+                bin_max <- input[[paste0("bin_", i)]]
+                bin_min <- input[[paste0("bin_", i - 1)]] %||% -Inf
+                if (is.infinite(bin_min)) paste0("≤ ", bin_max) else paste0(bin_min, " – ", bin_max)
+              } else {
+                if (i == 1) "False" else "True"
+              }
+            })
+          }
+
+          # Expand to full label set for uniform mode
+          if (input$x_axis_display_mode == "uniform") {
+            full_df <- data.frame(x_label = factor(all_x_labels, levels = all_x_labels),
+                                  stringsAsFactors = FALSE)
+            df <- full_df %>%
+              left_join(df %>% mutate(x_label = as.character(x_label)),
+                        by = "x_label") %>%
+              mutate(
+                Count = ifelse(is.na(Count), 0, Count),
+                y_val = ifelse(is.na(y_val), 0, y_val)
+              )
+            df$x_label <- factor(df$x_label, levels = all_x_labels)
+          }
+
+          list(name = f$name, data = df)
+
+        }, error = function(e) {
+          warning(paste("vizData error for", f$name, ":", e$message))
+          NULL
+        })
+
+      } else if (bin_type == "fhir_bins") {
+        # Use FHIR in bins configuration
+        req(input$fhir_resource_to_viz_binning,
+            input$fhir_category_col_binning,
+            input$fhir_n_bins,
+            input$value_types)
+
+        if (f$type != "fhir") return(NULL)
+
+        tryCatch({
+          file_data_list <- loadFhirFile(f$path, f$name)
+          if (is.null(file_data_list) || length(file_data_list) == 0) return(NULL)
+
+          selected_resource_type <- input$fhir_resource_to_viz_binning
+          selected_attribute     <- input$fhir_category_col_binning
+          n_bins                 <- input$fhir_n_bins
+          value_type             <- input$value_types
+
+          matching_datasets <- names(file_data_list)[grepl(
+            paste0("_", selected_resource_type, "$"), names(file_data_list))]
+          if (length(matching_datasets) == 0) return(NULL)
+
+          all_vals <- do.call(rbind, lapply(matching_datasets, function(dn) {
+            d <- file_data_list[[dn]]
+            if (selected_attribute %in% colnames(d)) {
+              data.frame(value = d[[selected_attribute]], stringsAsFactors = FALSE)
+            }
+          }))
+          if (is.null(all_vals) || nrow(all_vals) == 0) return(NULL)
+
+          # Build bin labels
+          truncate_label <- function(x, max_chars = 15) {
+            ifelse(nchar(x) > max_chars, paste0(substr(x, 1, max_chars), "..."), x)
+          }
+
+          bin_labels <- setNames(sapply(1:n_bins, function(i) {
+            if (value_type == "text") {
+              vals <- input[[paste0("bin_", i)]]
+              if (!is.null(vals) && length(vals) > 0) truncate_label(vals) else paste("Bin", i)
+            } else if (value_type == "num") {
+              bin_max <- input[[paste0("bin_", i)]]
+              bin_min <- input[[paste0("bin_", i - 1)]] %||% -Inf
+              if (is.infinite(bin_min)) paste0("≤ ", bin_max) else paste0(bin_min, " – ", bin_max)
+            } else {
+              if (i == 1) "False" else "True"
+            }
+          }), paste0("Bin ", 1:n_bins))
+
+          # Assign bins
+          all_vals$bin <- NA_character_
+          for (i in 1:n_bins) {
+            if (value_type == "text") {
+              bv <- input[[paste0("bin_", i)]]
+              if (!is.null(bv)) all_vals$bin[all_vals$value %in% bv] <- paste("Bin", i)
+            } else if (value_type == "num") {
+              bmax <- input[[paste0("bin_", i)]]
+              bmin <- input[[paste0("bin_", i - 1)]] %||% -Inf
+              all_vals$bin[all_vals$value <= bmax & all_vals$value > bmin] <- paste("Bin", i)
+            } else {
+              if (i == 1) all_vals$bin[all_vals$value == FALSE] <- paste("Bin", i)
+              if (i == 2) all_vals$bin[all_vals$value == TRUE]  <- paste("Bin", i)
+            }
+          }
+
+          all_vals <- all_vals[!is.na(all_vals$bin), ]
+          if (nrow(all_vals) == 0) return(NULL)
+
+          df <- all_vals %>%
+            count(bin, name = "Count") %>%
+            mutate(x_label = bin_labels[bin],
+                   x_label = factor(x_label, levels = bin_labels))
+
+          if (display_mode == "percent") {
+            df <- df %>% mutate(y_val = round(Count / sum(Count) * 100, 2))
+          } else {
+            df <- df %>% mutate(y_val = Count)
+          }
+
+          # Full label set for uniform x-axis
+          all_x_labels <-  if (bin_type == "census") {
+            age_order <- unique(census_ref$Age[order(as.numeric(sub("[-+].*", "", census_ref$Age)))])
+            genders   <- sort(unique(census_ref$Gender))
+            as.vector(t(outer(age_order, genders, paste, sep = " · ")))
+          } else {
+            # All bin labels from FHIR bins
+            req(input$fhir_n_bins, input$value_types)
+            n_bins     <- input$fhir_n_bins
+            value_type <- input$value_types
+            truncate_label <- function(x, max_chars = 15) {
+              ifelse(nchar(x) > max_chars, paste0(substr(x, 1, max_chars), "..."), x)
+            }
+            sapply(1:n_bins, function(i) {
+              if (value_type == "text") {
+                vals <- input[[paste0("bin_", i)]]
+                if (!is.null(vals) && length(vals) > 0) truncate_label(vals) else paste("Bin", i)
+              } else if (value_type == "num") {
+                bin_max <- input[[paste0("bin_", i)]]
+                bin_min <- input[[paste0("bin_", i - 1)]] %||% -Inf
+                if (is.infinite(bin_min)) paste0("≤ ", bin_max) else paste0(bin_min, " – ", bin_max)
+              } else {
+                if (i == 1) "False" else "True"
+              }
+            })
+          }
+
+          # Expand to full label set for uniform mode
+          if (input$x_axis_display_mode == "uniform") {
+            full_df <- data.frame(x_label = factor(all_x_labels, levels = all_x_labels),
+                                  stringsAsFactors = FALSE)
+            df <- full_df %>%
+              left_join(df %>% mutate(x_label = as.character(x_label)),
+                        by = "x_label") %>%
+              mutate(
+                Count = ifelse(is.na(Count), 0, Count),
+                y_val = ifelse(is.na(y_val), 0, y_val)
+              )
+            df$x_label <- factor(df$x_label, levels = all_x_labels)
+          }
+
+          list(name = f$name, data = df)
+
+        }, error = function(e) {
+          warning(paste("vizData fhir_bins error for", f$name, ":", e$message))
+          NULL
+        })
+      }
+    })
+
+    Filter(Negate(is.null), results)
+  })
+
+  output$vizPlotsUI <- renderUI({
+    req(vizData())
+    dl <- vizData()
+    if (length(dl) == 0) return(p("No data to display.", style = "color:#999;"))
+
+    if (input$viz_layout_mode == "overlay") {
+      plotOutput("vizOverlayPlot", height = "500px")
+    } else {
+      tagList(lapply(seq_along(dl), function(i) {
+        plotOutput(paste0("vizPlot_", i), height = "350px")
+      }))
+    }
+  })
+
+  observe({
+    req(vizData())
+    dl           <- vizData()
+    display_mode <- isolate(input$viz_display_mode)
+    y_label      <- if (isolate(input$viz_display_mode) == "percent") "Percentage (%)" else "Count"
+
+    # Shared y max
+    y_max <- max(unlist(lapply(dl, function(x) x$data$y_val)), na.rm = TRUE)
+
+    for (i in seq_along(dl)) {
+      local({
+        idx  <- i
+        d    <- dl[[idx]]
+
+        output[[paste0("vizPlot_", idx)]] <- renderPlot({
+          ggplot(d$data, aes(x = x_label, y = y_val, fill = sub(".* · ", "", as.character(x_label)))) +
+            geom_bar(stat = "identity", alpha = 1, colour = "white", linewidth = 0.2) +
+            scale_y_continuous(limits = c(0, y_max * 1.05)) +
+            scale_x_discrete(drop = FALSE) +  # ← keep empty bins
+            scale_fill_brewer(palette = "Set2") +
+            theme_minimal(base_size = 14) +
+            labs(
+              title = d$name,
+              x     = NULL,
+              y     = y_label,
+              fill  = "Gender"
+            ) +
+            theme(
+              axis.text.x     = element_text(angle = 45, hjust = 1),
+              legend.position = "bottom",
+              plot.title      = element_text(face = "bold")
+            )
+        })
+      })
+    }
+  })
+
+  output$vizOverlayPlot <- renderPlot({
+    req(vizData())
+    dl           <- vizData()
+    alpha        <- input$viz_overlay_alpha
+    y_label      <- if (input$viz_display_mode == "percent") "Percentage (%)" else "Count"
+    y_max        <- max(unlist(lapply(dl, function(x) x$data$y_val)), na.rm = TRUE)
+
+    # Combine all sources into one data frame, keeping only needed columns
+    combined <- do.call(rbind, lapply(dl, function(d) {
+      data.frame(
+        x_label = as.character(d$data$x_label),
+        y_val   = d$data$y_val,
+        source  = d$name,
+        stringsAsFactors = FALSE
+      )
+    }))
+
+    # Ensure x_label factor levels are consistent
+    all_levels <- levels(dl[[1]]$data$x_label)
+    combined$x_label <- factor(combined$x_label, levels = all_levels)
+
+    ggplot(combined, aes(x = x_label, y = y_val, fill = source)) +
+      geom_bar(stat = "identity", position = "identity",
+               alpha = alpha, colour = "white", linewidth = 0.2) +
+      scale_y_continuous(limits = c(0, y_max * 1.05)) +
+      scale_x_discrete(drop = FALSE) +
+      scale_fill_brewer(palette = "Set2") +
+      theme_minimal(base_size = 14) +
+      labs(
+        title = "Overlay Comparison",
+        x     = NULL,
+        y     = y_label,
+        fill  = "Source"
+      ) +
+      theme(
+        axis.text.x     = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom",
+        plot.title      = element_text(face = "bold")
+      )
   })
 }
 # end server
