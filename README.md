@@ -41,27 +41,13 @@
 
 | **Category**                       | **Description**                                                                                                                                             |
 |------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Data Import**                    | • Upload multiple CSV or JSON files<br>• Connect to any FHIR® server (default: HAPI Test Server – placeholder; replace with your internal FHIR endpoint)    |
+| **Data Import**                    | • Upload multiple CSV, JSON, or FHIR® bundle JSON files (e.g. pre-fetched from a HAPI Test Server)<br>• Live FHIR server connection code exists (`fhircrackr`/`httr`) but is currently not wired into the UI — no immediate use case was found, so it's unused for now    |
 | **Column Mapping**                 | • Dynamically map ‘Category’ and ‘Count’ columns when CSV headers differ                                                                                   |
 | **Visual Exploration**             | • Draggable mini-plots (Histogram, Pie Chart, Line Chart) with adjustable transparency<br>• “Stack All” and “Stack Selected” controls                       |
 | **Data Combination & Intersection**| • Stacked-bar combination of selected categories across datasets<br>• Identify and export category intersections as JSON                                     |
 | **Statistical Overview**           | • Auto-generated tables: dataset sizes, mean counts<br>• Color-coded summary of category prevalence (all/multiple/single sources)                         |
-| **Geospatial Visualization**       | • Interactive map of German Data Integration Centers using **leaflet** and **geodata**                                                                      |
-
----
-
-```
-                               - Connect to any FHIR® server (default: HAPI Test Server – _placeholder; replace with your internal FHIR endpoint_)
-```
-
-\| **Column Mapping**            | Dynamic mapping of CSV columns when `Category` and `Count` are not standard               |
-\| **Visual Exploration**        | - Draggable mini-plots (Histogram, Pie, Line) with transparency control
-\- “Stack All” / “Stack Selected” controls                                               |
-\| **Data Combination & Intersection** | - Stacked-bar combination of selected categories across files
-\- Identification & export of category intersections                                    |
-\| **Statistical Overview**      | - Tables of dataset sizes, means, category presence
-\- Color-coded summary (all / multiple / single sources)                                |
-\| **Geospatial Visualization**  | Map of German Data Integration Centers (via **leaflet**, **geodata**)                     |
+| **Geospatial Visualization**       | • *Currently disabled*: code for an interactive map of German Data Integration Centers (**leaflet** + **geodata**) exists but is commented out and not part of the running app                                                                      |
+| **FHIR Bin Reports**               | • Bin FHIR attribute values (text, numeric, boolean) and export as a FHIR `MeasureReport` (separate or composite stratifier format)                        |
 
 ---
 
@@ -73,6 +59,8 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
    Defined via `fluidPage()` and `navbarPage()`, grouping functionality into:
 
    * Data Upload
+   * Census Data
+   * FHIR in bins
    * Visualization
    * Combined Data
    * Statistics
@@ -88,10 +76,10 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
 
 4. **Plotting Components**
 
-   * `ggplot2` charts and **leaflet** maps via separate render functions (`renderPlot()`, `renderLeaflet()`)
+   * `ggplot2` charts via separate render functions (`renderPlot()`); a **leaflet** map render function exists but is currently commented out (see Geospatial Visualization above)
 
 5. **Data Integration Pipeline**
-   Central reactive `allData` unifies datasets from uploads and FHIR requests, powering both visualization and statistics without redundant computations.
+   Central reactive `allData` unifies datasets from uploads, powering both visualization and statistics without redundant computations.
 
 6. **Extensibility & Testing**
 
@@ -111,7 +99,7 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
     "shiny", "shinythemes", "shinyjqui",
     "jsonlite", "readr", "fhircrackr", "httr",
     "dplyr", "tidyr", "ggplot2", "leaflet",
-    "geodata", "terra"
+    "DT"
   ))
   ```
 
@@ -122,8 +110,8 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
 1. **Clone repository**
 
    ```bash
-   git clone https://github.com/YourOrg/medical-data-dashboard.git
-   cd medical-data-dashboard
+   git clone https://git.uni-greifswald.de/MILA_public/DQ-App.git
+   cd DQ-App
    ```
 
 2. **Install & Run**
@@ -133,14 +121,22 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
    runApp("app.R")
    ```
 
+> **Need a ready-made R environment?**
+> If you don't have a suitable R installation, use a container image from the
+> [Rocker Project](https://rocker-project.org/). The `rocker/shiny` or
+> `rocker/tidyverse` images provide R with Shiny preinstalled and give you a
+> reproducible environment for running the app.
+
 ---
 
 ## Usage
 
-1. Open `(...)` in your browser.
+1. Run the app (see Installation above) — Shiny will open it automatically in a browser window/tab.
 2. Navigate tabs:
 
-   * **Data Upload**: Upload CSV/JSON or connect to FHIR (*replace placeholder URL*)
+   * **Data Upload**: Upload CSV/JSON/FHIR bundle files
+   * **Census Data**: Visualize census population data and uploaded FHIR patient data
+   * **FHIR in bins**: Bin FHIR attribute values and export as a FHIR `MeasureReport`
    * **Visualization**: Arrange & filter mini-plots
    * **Combined Data**: Combine categories, download JSON
    * **Statistics**: View summaries & category presence
@@ -159,19 +155,18 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
 
 * **Extended FHIR Support**: Add Observations, Conditions
 * **Automated Testing**: Full `testthat` suite integration
-* **CI/CD**: 
 
 ---
 
 ## License & Citation
 
-* **License**: (...)
+* **License**: [MIT](LICENSE)
 * **Citation**:
 
-  > Braun S., Draeger C., Michaelis L., et al. (2025). *Interactive Medical Data App*. GitHub. [https://github.com/YourOrg/medical-data-dashboard](https://github.com/YourOrg/medical-data-dashboard)
+  > Braun S., Draeger C., Michaelis L., et al. (2025). *Interactive Medical Data App*. [https://git.uni-greifswald.de/MILA_public/DQ-App](https://git.uni-greifswald.de/MILA_public/DQ-App)
 
 ---
 
-> **Note**: Default FHIR server (`http://hapi.fhir.org/baseR4`) is a placeholder. Replace with your institution’s internal FHIR endpoint in production.
+> **Note**: A live FHIR-server connection was implemented and works, but is currently not exposed in the UI — no immediate use case was found for it. FHIR data is currently provided via uploading pre-fetched bundle JSON files instead.
 
 

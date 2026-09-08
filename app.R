@@ -258,8 +258,12 @@ ui <- fluidPage(
                     uiOutput("fhirValuesUIBinning")
                   ),
                   mainPanel(
-                    h4("Visualisation of the fhir data in bins incoming"),
-                    plotOutput("plotBins", height = "400px")
+                    h4("Visualisation of the fhir data in bins"),
+                    plotOutput("plotBins", height = "400px"),
+                    br(),
+                    actionButton("downloadBinsReport", "Download Report",
+                                 class = "btn btn-primary",
+                                 icon = icon("download"))
                   )
                 ),
              ),
@@ -2559,6 +2563,179 @@ server <- function(input, output, session) {
         plot.title      = element_text(face = "bold")
       )
   })
+
+  # Show format selection modal on button click
+  observeEvent(input$downloadBinsReport, {
+    req(input$fhir_category_col_binning, input$fhir_resource_to_viz_binning)
+
+    showModal(modalDialog(
+      title = "Download Bin Report",
+      radioButtons("bins_report_format", "Report Format:",
+                   choices = c("Separate" = "separate",
+                               "Composite" = "composite"),
+                   selected = "separate"),
+      footer = tagList(
+        modalButton("Cancel"),
+        downloadButton("downloadBinsReportFile", "Download",
+                       class = "btn btn-primary")
+      )
+    ))
+  })
+
+  output$downloadBinsReportFile <- downloadHandler(
+    filename = function() {
+      attr <- make_safe_id(input$fhir_category_col_binning)
+      paste0("bin_report_", attr, "_", Sys.Date(), ".json")
+    },
+    content = function(file) {
+      fhir_data    <- fhirDataBinning()
+      n_bins       <- input$fhir_n_bins
+      value_type   <- input$value_types
+      selected_resource_type <- input$fhir_resource_to_viz_binning
+      selected_attribute     <- input$fhir_category_col_binning
+      format       <- input$bins_report_format
+
+      # Build truncate helper
+      truncate_label <- function(x, max_chars = 15) {
+        ifelse(nchar(x) > max_chars, paste0(substr(x, 1, max_chars), "..."), x)
+      }
+
+      # Build bin labels
+      bin_labels <- setNames(sapply(1:n_bins, function(i) {
+        if (value_type == "text") {
+          vals <- input[[paste0("bin_", i)]]
+          if (!is.null(vals) && length(vals) > 0) truncate_label(vals) else paste("Bin", i)
+        } else if (value_type == "num") {
+          bin_max <- input[[paste0("bin_", i)]]
+          bin_min <- input[[paste0("bin_", i - 1)]] %||% -Inf
+          if (is.infinite(bin_min)) paste0("\u2264 ", bin_max) else paste0(bin_min, " \u2013 ", bin_max)
+        } else {
+          if (i == 1) "False" else "True"
+        }
+      }), paste0("Bin ", 1:n_bins))
+
+      # Collect all data
+      matching_datasets <- names(fhir_data)[grepl(
+        paste0("_", selected_resource_type, "$"), names(fhir_data))]
+
+      all_vals <- do.call(rbind, lapply(matching_datasets, function(dn) {
+        d <- fhir_data[[dn]]
+        if (selected_attribute %in% colnames(d)) {
+          data.frame(value = d[[selected_attribute]], stringsAsFactors = FALSE)
+        }
+      }))
+
+      # Assign bins
+      all_vals$bin <- NA_character_
+      for (i in 1:n_bins) {
+        if (value_type == "text") {
+          bv <- input[[paste0("bin_", i)]]
+          if (!is.null(bv)) all_vals$bin[all_vals$value %in% bv] <- paste("Bin", i)
+        } else if (value_type == "num") {
+          bmax <- input[[paste0("bin_", i)]]
+          bmin <- input[[paste0("bin_", i - 1)]] %||% -Inf
+          all_vals$bin[all_vals$value <= bmax & all_vals$value > bmin] <- paste("Bin", i)
+        } else {
+          if (i == 1) all_vals$bin[all_vals$value == FALSE] <- paste("Bin", i)
+          if (i == 2) all_vals$bin[all_vals$value == TRUE]  <- paste("Bin", i)
+        }
+      }
+
+      all_vals <- all_vals[!is.na(all_vals$bin), ]
+
+      # Count per bin
+      bin_counts <- all_vals %>%
+        count(bin, name = "Count") %>%
+        mutate(label = bin_labels[bin]) %>%
+        as.data.frame()
+
+      total_count <- sum(bin_counts$Count)
+
+      if (format == "separate") {
+        # ── Separate format: one stratifier with one stratum per bin ──────────────
+        report <- list(
+          resourceType = "MeasureReport",
+          status       = "complete",
+          type         = "summary",
+          date         = format(Sys.time(), "%Y-%m-%dT%H:%M:%S+00:00"),
+          period       = list(
+            start = as.character(Sys.Date()),
+            end   = as.character(Sys.Date())
+          ),
+          group = list(list(
+            population = list(list(
+              code  = list(coding = list(list(
+                system = "http://terminology.hl7.org/CodeSystem/measure-population",
+                code   = "initial-population"
+              ))),
+              count = total_count
+            )),
+            stratifier = list(list(
+              code   = list(list(text = selected_attribute)),
+              stratum = lapply(seq_len(nrow(bin_counts)), function(i) {
+                list(
+                  value      = list(text = bin_counts$label[i]),
+                  population = list(list(
+                    code  = list(coding = list(list(
+                      system = "http://terminology.hl7.org/CodeSystem/measure-population",
+                      code   = "initial-population"
+                    ))),
+                    count = bin_counts$Count[i]
+                  ))
+                )
+              })
+            ))
+          ))
+        )
+
+      } else {
+        # ── Composite format: one stratifier with component per bin ───────────────
+        report <- list(
+          resourceType = "MeasureReport",
+          status       = "complete",
+          type         = "summary",
+          date         = format(Sys.time(), "%Y-%m-%dT%H:%M:%S+00:00"),
+          period       = list(
+            start = as.character(Sys.Date()),
+            end   = as.character(Sys.Date())
+          ),
+          group = list(list(
+            population = list(list(
+              code  = list(coding = list(list(
+                system = "http://terminology.hl7.org/CodeSystem/measure-population",
+                code   = "initial-population"
+              ))),
+              count = total_count
+            )),
+            stratifier = list(list(
+              code   = list(list(text = selected_attribute)),
+              stratum = lapply(seq_len(nrow(bin_counts)), function(i) {
+                list(
+                  component = list(
+                    list(
+                      code  = list(text = selected_attribute),
+                      value = list(text = bin_counts$label[i])
+                    )
+                  ),
+                  measureScore = list(value = bin_counts$Count[i]),
+                  population   = list(list(
+                    code  = list(coding = list(list(
+                      system = "http://terminology.hl7.org/CodeSystem/measure-population",
+                      code   = "initial-population"
+                    ))),
+                    count = bin_counts$Count[i]
+                  ))
+                )
+              })
+            ))
+          ))
+        )
+      }
+
+      jsonlite::write_json(report, file, pretty = TRUE, auto_unbox = TRUE)
+      removeModal()
+    }
+  )
 }
 # end server
 
