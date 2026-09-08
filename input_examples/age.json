@@ -1,0 +1,40 @@
+{
+  "Histogram": [
+    {
+      "Category": {
+        "@value": "18-25"
+      },
+      "Count": {
+        "@value": 80,
+        "@type": "xsd:decimal"
+      }
+    },
+    {
+      "Category": {
+        "@value": "26-35"
+      },
+      "Count": {
+        "@value": 120,
+        "@type": "xsd:decimal"
+      }
+    },
+    {
+      "Category": {
+        "@value": "36-45"
+      },
+      "Count": {
+        "@value": 60,
+        "@type": "xsd:decimal"
+      }
+    },
+    {
+      "Category": {
+        "@value": "46+"
+      },
+      "Count": {
+        "@value": 40,
+        "@type": "xsd:decimal"
+      }
+    }
+  ]
+}
