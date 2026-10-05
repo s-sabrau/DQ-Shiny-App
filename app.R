@@ -24,7 +24,7 @@ required_pkgs <- c(
   "jsonlite", "readr",
   "fhircrackr", "httr",
   "dplyr", "tidyr",
-  "ggplot2", "leaflet",
+  "ggplot2", "ggiraph", "leaflet",
   "DT"
 )
 
@@ -279,6 +279,10 @@ ui <- fluidPage(
                                        choices = c("Census (Age × Gender)" = "census",
                                                    "FHIR in Bins"          = "fhir_bins"),
                                        selected = "census"),
+                          conditionalPanel(
+                            condition = "input.viz_bin_type == 'census'",
+                            checkboxInput("viz_combine_gender", "Combine male and female", FALSE)
+                          ),
                           hr(),
                           h4("Display"),
                           radioButtons("viz_display_mode", "Display as:",
@@ -295,8 +299,21 @@ ui <- fluidPage(
                                        selected = "individual"),
                           conditionalPanel(
                             condition = "input.viz_layout_mode == 'overlay'",
-                            sliderInput("viz_overlay_alpha", "Transparency:",
-                                        min = 0.1, max = 1, value = 0.5, step = 0.05)
+                            radioButtons("viz_overlay_style", "Overlay style:",
+                                         choices = c("Lines"                   = "lines",
+                                                     "Difference to reference" = "diff",
+                                                     "Grouped bars"            = "dodge",
+                                                     "Transparent bars"        = "bars"),
+                                         selected = "lines"),
+                            conditionalPanel(
+                              condition = "input.viz_overlay_style == 'diff'",
+                              uiOutput("vizReferenceSelector")
+                            ),
+                            conditionalPanel(
+                              condition = "input.viz_overlay_style == 'bars'",
+                              sliderInput("viz_overlay_alpha", "Transparency:",
+                                          min = 0.1, max = 1, value = 0.5, step = 0.05)
+                            )
                           )
                         ),
                         mainPanel(
@@ -2196,6 +2213,7 @@ server <- function(input, output, session) {
     selected     <- Filter(function(f) f$path %in% input$viz_selected_sources, files)
     bin_type     <- input$viz_bin_type
     display_mode <- input$viz_display_mode
+    combine_gender <- isTRUE(input$viz_combine_gender) && bin_type == "census"
 
     results <- lapply(selected, function(f) {
 
@@ -2282,6 +2300,14 @@ server <- function(input, output, session) {
             return(NULL)
           }
 
+          # Optionally sum genders per age group, before percentages are computed
+          if (combine_gender) {
+            df <- df %>%
+              mutate(x_label = sub(" · .*", "", x_label)) %>%
+              group_by(x_label) %>%
+              summarise(Count = sum(Count), .groups = "drop")
+          }
+
           # Sort x_label by age numerically
           age_order <- unique(df$x_label[order(as.numeric(sub("[-+].*", "",
                                                               sub(" · .*", "", df$x_label))))])
@@ -2297,7 +2323,8 @@ server <- function(input, output, session) {
           all_x_labels <-  if (bin_type == "census") {
             age_order <- unique(census_ref$Age[order(as.numeric(sub("[-+].*", "", census_ref$Age)))])
             genders   <- sort(unique(census_ref$Gender))
-            as.vector(t(outer(age_order, genders, paste, sep = " · ")))
+            if (combine_gender) age_order
+            else as.vector(t(outer(age_order, genders, paste, sep = " · ")))
           } else {
             # All bin labels from FHIR bins
             req(input$fhir_n_bins, input$value_types)
@@ -2478,7 +2505,7 @@ server <- function(input, output, session) {
     if (length(dl) == 0) return(p("No data to display.", style = "color:#999;"))
 
     if (input$viz_layout_mode == "overlay") {
-      plotOutput("vizOverlayPlot", height = "500px")
+      girafeOutput("vizOverlayPlot", width = "100%", height = "auto")
     } else {
       tagList(lapply(seq_along(dl), function(i) {
         plotOutput(paste0("vizPlot_", i), height = "350px")
@@ -2500,12 +2527,18 @@ server <- function(input, output, session) {
         idx  <- i
         d    <- dl[[idx]]
 
+        # Without " · <gender>" in the labels (genders combined, FHIR bins) there
+        # is a single series: one colour, no legend
+        has_gender <- all(grepl(" · ", levels(d$data$x_label)))
+
         output[[paste0("vizPlot_", idx)]] <- renderPlot({
-          ggplot(d$data, aes(x = x_label, y = y_val, fill = sub(".* · ", "", as.character(x_label)))) +
+          ggplot(d$data, aes(x = x_label, y = y_val,
+                             fill = if (has_gender) sub(".* · ", "", as.character(x_label)) else "All")) +
             geom_bar(stat = "identity", alpha = 1, colour = "white", linewidth = 0.2) +
             scale_y_continuous(limits = c(0, y_max * 1.05)) +
             scale_x_discrete(drop = FALSE) +  # ← keep empty bins
-            scale_fill_brewer(palette = "Set2") +
+            {if (has_gender) scale_fill_brewer(palette = "Set2")
+             else scale_fill_manual(values = c(All = "#2a78d6"), guide = "none")} +
             theme_minimal(base_size = 14) +
             labs(
               title = d$name,
@@ -2523,14 +2556,46 @@ server <- function(input, output, session) {
     }
   })
 
-  output$vizOverlayPlot <- renderPlot({
-    req(vizData())
-    dl           <- vizData()
-    alpha        <- input$viz_overlay_alpha
-    y_label      <- if (input$viz_display_mode == "percent") "Percentage (%)" else "Count"
-    y_max        <- max(unlist(lapply(dl, function(x) x$data$y_val)), na.rm = TRUE)
+  # Categorical colours in fixed order; a source keeps its colour as long as
+  # its position among the uploaded files does not change
+  viz_source_palette <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                          "#e87ba4", "#008300", "#4a3aa7", "#e34948")
 
-    # Combine all sources into one data frame, keeping only needed columns
+  vizSourceColours <- function(source_names) {
+    all_names <- sapply(uploadedFiles(), `[[`, "name")
+    idx <- match(source_names, all_names)
+    if (length(source_names) > length(viz_source_palette) ||
+        any(is.na(idx)) || max(idx) > length(viz_source_palette)) {
+      idx <- seq_along(source_names)
+    }
+    cols <- if (length(source_names) <= length(viz_source_palette)) {
+      viz_source_palette[idx]
+    } else {
+      scales::hue_pal()(length(source_names))
+    }
+    setNames(cols, source_names)
+  }
+
+  output$vizReferenceSelector <- renderUI({
+    req(vizData())
+    src_names <- sapply(vizData(), `[[`, "name")
+    if (length(src_names) == 0) return(NULL)
+    default <- src_names[grepl("Deutschland", src_names)][1]
+    if (is.na(default)) default <- src_names[1]
+    selectInput("viz_reference_source", "Reference source:",
+                choices = src_names, selected = default)
+  })
+
+  output$vizOverlayPlot <- renderGirafe({
+    req(vizData())
+    dl         <- vizData()
+    style      <- input$viz_overlay_style %||% "lines"
+    is_percent <- input$viz_display_mode == "percent"
+    y_label    <- if (is_percent) "Percentage (%)" else "Count"
+
+    # Combine all sources; keep the x order of every source (minimal mode may
+    # give each source a different label set)
+    all_levels <- unique(unlist(lapply(dl, function(d) levels(d$data$x_label))))
     combined <- do.call(rbind, lapply(dl, function(d) {
       data.frame(
         x_label = as.character(d$data$x_label),
@@ -2539,30 +2604,133 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE
       )
     }))
+    combined$source <- factor(combined$source, levels = sapply(dl, `[[`, "name"))
+    strip_ext <- function(x) sub("\\.(json|csv)$", "", x, ignore.case = TRUE)
 
-    # Ensure x_label factor levels are consistent
-    all_levels <- levels(dl[[1]]$data$x_label)
-    combined$x_label <- factor(combined$x_label, levels = all_levels)
+    # Census bins look like "<age> · <gender>": split them so age becomes the
+    # x-axis and gender a panel, instead of interleaving genders along one axis
+    split_gender <- all(grepl(" · ", all_levels))
+    if (split_gender) {
+      age_levels       <- unique(sub(" · .*", "", all_levels))
+      combined$x       <- factor(sub(" · .*", "", combined$x_label), levels = age_levels)
+      combined$Gender  <- sub(".* · ", "", combined$x_label)
+    } else {
+      combined$x <- factor(combined$x_label, levels = all_levels)
+    }
 
-    ggplot(combined, aes(x = x_label, y = y_val, fill = source)) +
-      geom_bar(stat = "identity", position = "identity",
-               alpha = alpha, colour = "white", linewidth = 0.2) +
-      scale_y_continuous(limits = c(0, y_max * 1.05)) +
+    if (style == "diff") {
+      req(input$viz_reference_source)
+      ref_name <- input$viz_reference_source
+      req(ref_name %in% combined$source)
+      ref <- combined[combined$source == ref_name, c("x_label", "y_val")]
+      names(ref)[2] <- "ref_val"
+      combined <- combined[combined$source != ref_name, ]
+      req(nrow(combined) > 0)
+      combined <- merge(combined, ref, by = "x_label", all.x = TRUE)
+      combined$ref_val[is.na(combined$ref_val)] <- 0
+      combined$y_val <- combined$y_val - combined$ref_val
+      combined <- combined[order(combined$source, combined$x), ]
+      y_label <- if (is_percent) "Difference (percentage points)" else "Difference (count)"
+    }
+
+    colours <- vizSourceColours(levels(droplevels(combined$source)))
+    labels  <- setNames(strip_ext(names(colours)), names(colours))
+
+    value_fmt <- if (style == "diff") {
+      function(v) paste0(ifelse(v > 0, "+", ""), formatC(v, format = "f", digits = if (is_percent) 2 else 0, big.mark = ","),
+                         if (is_percent) " pp" else "")
+    } else {
+      function(v) paste0(formatC(v, format = "f", digits = if (is_percent) 2 else 0, big.mark = ","),
+                         if (is_percent) " %" else "")
+    }
+    combined$tooltip <- paste0("<b>", htmltools::htmlEscape(strip_ext(as.character(combined$source))), "</b><br>",
+                               htmltools::htmlEscape(combined$x_label), ": ", value_fmt(combined$y_val))
+
+    p <- ggplot(combined, aes(x = x, y = y_val, fill = source, group = source,
+                              data_id = source, tooltip = tooltip))
+
+    if (style %in% c("lines", "diff")) {
+      if (style == "diff") {
+        p <- p + geom_hline(yintercept = 0, colour = "grey40", linewidth = 0.6)
+      }
+      p <- p +
+        geom_line_interactive(aes(colour = source, tooltip = strip_ext(as.character(source))),
+                              linewidth = 0.9, show.legend = FALSE) +
+        geom_point_interactive(size = 2.2, shape = 21, colour = "white", stroke = 0.6) +
+        scale_colour_manual(values = colours, guide = "none")
+    } else if (style == "dodge") {
+      p <- p + geom_col_interactive(position = position_dodge(width = 0.85), width = 0.8,
+                        colour = "white", linewidth = 0.2)
+    } else {
+      p <- p + geom_col_interactive(position = "identity", alpha = input$viz_overlay_alpha,
+                        colour = "white", linewidth = 0.2)
+    }
+
+    if (style != "diff") {
+      p <- p + scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.05)))
+    }
+    if (split_gender) {
+      p <- p + facet_wrap(~Gender, ncol = 1)
+    }
+
+    p <- p +
       scale_x_discrete(drop = FALSE) +
-      scale_fill_brewer(palette = "Set2") +
+      # data_id on the legend keys/labels lets the legend drive the highlight
+      scale_fill_manual_interactive(
+        values  = colours,
+        data_id = function(breaks) as.character(breaks),
+        labels  = function(breaks) lapply(breaks, function(b)
+          label_interactive(labels[[b]], data_id = b))
+      ) +
       theme_minimal(base_size = 14) +
       labs(
-        title = "Overlay Comparison",
-        x     = NULL,
-        y     = y_label,
-        fill  = "Source"
+        title    = switch(style,
+                          lines = "Overlay Comparison",
+                          diff  = paste("Difference to", strip_ext(input$viz_reference_source)),
+                          dodge = "Overlay Comparison",
+                          bars  = "Overlay Comparison"),
+        subtitle = if (style == "diff" && !is_percent)
+                     "Absolute counts depend on population size; switch to Percentages to compare distributions"
+                   else NULL,
+        x        = if (input$viz_bin_type == "census") "Age group" else NULL,
+        y        = y_label,
+        fill     = "Source"
       ) +
+      guides(fill = guide_legend_interactive(ncol = 2, override.aes = list(size = 3.5))) +
       theme(
-        axis.text.x     = element_text(angle = 45, hjust = 1),
-        legend.position = "bottom",
-        plot.title      = element_text(face = "bold")
+        axis.text.x        = element_text(angle = 45, hjust = 1),
+        panel.grid.minor   = element_blank(),
+        panel.grid.major.x = element_blank(),
+        strip.text         = element_text(face = "bold", hjust = 0),
+        legend.position    = "bottom",
+        plot.title         = element_text(face = "bold")
       )
+
+    girafe(
+      ggobj     = p,
+      width_svg = 11,
+      height_svg = if (split_gender) 8 else 6,
+      options   = list(
+        opts_sizing(rescale = TRUE, width = 1),
+        opts_hover(css = girafe_css(css = "", line = "stroke-width:3px;"), reactive = TRUE),
+        opts_hover_inv(css = "opacity:0.12;"),
+        opts_hover_key(css = girafe_css(css = "cursor:pointer;", text = "font-weight:bold;cursor:pointer;"),
+                       reactive = TRUE),
+        opts_tooltip(css = "background:#fff;color:#222;border:1px solid #ccc;border-radius:4px;padding:6px 8px;font-size:12px;",
+                     use_fill = FALSE, opacity = 0.95),
+        opts_selection(type = "none"),
+        opts_selection_key(type = "none"),
+        opts_toolbar(saveaspng = TRUE)
+      )
+    )
   })
+
+  # Hovering a source in the legend highlights its line/bars: ggiraph reports the
+  # hovered legend key, and the data highlight is set to the same source
+  observeEvent(input$vizOverlayPlot_key_hovered, {
+    session$sendCustomMessage("vizOverlayPlot_hovered_set",
+                              as.character(input$vizOverlayPlot_key_hovered %||% character(0)))
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
 
   # Show format selection modal on button click
   observeEvent(input$downloadBinsReport, {
