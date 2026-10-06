@@ -1,6 +1,6 @@
 # Interactive Medical Data App
 
-**Version**: 0.0.1
+**Version**: 1.0.1
 
 ---
 
@@ -19,7 +19,7 @@
 
 ## Abstract
 
-> This Shiny application provides an interactive platform for uploading, integrating, visualizing, and summarizing heterogeneous medical datasets (CSV, JSON, FHIR). Built on state-of-the-art R packages (e.g., **shiny**, **fhircrackr**, **ggplot2**, **leaflet**), it enables researchers and clinical IT teams to explore data quality, distributions, and shared categories across multiple sources with full reproducibility and modularity.
+> This Shiny application (IQRviz, *Interoperable data Quality Report visualization*) provides an interactive platform for uploading, comparing, aggregating and summarizing data quality reports and value distributions from heterogeneous sources: CSV and JSON distributions, FHIR® MeasureReports (e.g. DQ summary reports, DQ-SR, and census reports) and FHIR bundles. Built on R packages such as **shiny**, **ggplot2**, **ggiraph** and **fhircrackr**, it lets researchers compare value distributions across sites, exclude or aggregate sites, and export the result as CSV, JSON or a FHIR `MeasureReport`.
 
 ---
 
@@ -40,19 +40,52 @@
 
 | **Category**                       | **Description**                                                                                                                                             |
 |------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Data Import**                    | • Upload multiple CSV, JSON, or FHIR® bundle JSON files (e.g. pre-fetched from a HAPI Test Server)<br>• Live FHIR server connection code exists (`fhircrackr`/`httr`) but is currently not wired into the UI — no immediate use case was found, so it's unused for now    |
-| **Column Mapping**                 | • Dynamically map ‘Category’ and ‘Count’ columns when CSV headers differ                                                                                   |
-| **Visual Exploration**             | • Draggable mini-plots (Histogram, Pie Chart, Line Chart) with adjustable transparency<br>• “Stack All” and “Stack Selected” controls                       |
+| **Data Import**                    | • Upload multiple CSV, JSON, FHIR® `MeasureReport` and FHIR bundle files (e.g. pre-fetched from a HAPI test server)<br>• Live FHIR server connection code exists (`fhircrackr`/`httr`) but is currently not wired into the UI |
+| **MeasureReports / DQ-SRs**        | • Any `MeasureReport` is read from its FHIR structure alone (R4 and R5): every stratifier becomes a category/count distribution<br>• Reports with several stratifiers get a selector for the distribution to use |
+| **Census Reports**                 | • Age × gender `MeasureReport`s in *composite* and *separate* style (see [Census report styles](#census-report-styles)) |
+| **Column Mapping**                 | • Map the category column (and optionally a count column) when CSV headers differ from `Category`/`Count`                                                  |
+| **FHIR in Bins**                   | • Bin the values of a FHIR attribute (text, numeric, boolean)<br>• Export the bins as a FHIR `MeasureReport` (separate or composite stratifier format)       |
+| **Compare**                        | • Compare sources side by side or overlaid (lines, difference to a reference, grouped or transparent bars); the overlay highlights a source on hover<br>• Bins from a census report, from the categories of any report, or from *FHIR in bins*<br>• Aggregate sources into a combined source<br>• Sources that cannot be mapped to the bins are excluded and listed in an info box<br>• Export as CSV, JSON or FHIR `MeasureReport` |
 | **Data Combination & Intersection**| • Stacked-bar combination of selected categories across datasets<br>• Identify and export category intersections as JSON                                     |
-| **Statistical Overview**           | • Auto-generated tables: dataset sizes, mean counts<br>• Color-coded summary of category prevalence (all/multiple/single sources)                         |
-| **Geospatial Visualization**       | • *Currently disabled*: code for an interactive map of German Data Integration Centers (**leaflet** + **geodata**) exists but is commented out and not part of the running app                                                                      |
-| **FHIR Bin Reports**               | • Bin FHIR attribute values (text, numeric, boolean) and export as a FHIR `MeasureReport` (separate or composite stratifier format)                        |
+| **Statistical Overview**           | • Auto-generated tables: number of categories and mean count per dataset<br>• Color-coded summary of category prevalence (all/multiple/single sources)       |
+| **Geospatial Visualization**       | • *Currently disabled*: code for an interactive map of German Data Integration Centers (**leaflet** + **geodata**) exists but is commented out and not part of the running app |
+
+---
+
+## Input Formats
+
+Each uploaded file is assigned a type on the **Data Upload** tab:
+
+| **Type**     | **Files**                                                                                                                                                  |
+|--------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **CSV/JSON** | Value distributions: CSV files (with `Category`/`Count` columns, or mapped columns), JSON histograms (`{"Histogram": [{"Category": {"@value": …}, "Count": {"@value": …}}]}`) and FHIR `MeasureReport`s such as DQ-SRs |
+| **Census**   | Age × gender `MeasureReport`s in composite or separate style                                                                                               |
+| **FHIR**     | FHIR bundles (JSON) with individual resources, e.g. `Patient`                                                                                              |
+
+### Census report styles
+
+Census reports (e.g. the MII *Summary Report Age Gender* measure) come in two styles:
+
+* **Composite**: one stratifier whose strata combine an age group and a gender (`component`s), so every stratum is one age × gender cell.
+* **Separate**: two stratifiers, one for gender and one for age group. They only hold the totals per gender and per age group, not the age × gender counts.
+
+The app never estimates age × gender counts from a separate report. The **Census Data** tab shows a separate report as two panels (age groups, gender), and **Compare** uses its age totals: with census bins only when *Combine male and female* is ticked, with report bins always.
+
+### Matching sources to bins
+
+In **Compare**, every source is mapped onto the selected bins. With bins from the *categories of a report*, a category matches a bin
+
+1. by name (case-insensitive),
+2. by numeric range, when the category's number or range lies within the bin's range (e.g. `20` or `18-25` fall into `18-64`), or
+3. without a trailing detail such as the gender, when the bin has none (e.g. `0-4 · male` counts towards `0-4`).
+
+FHIR bundles are mapped through the resource type and attribute chosen in the **FHIR in bins** tab. Records outside all bins are not counted; the info box reports how many.
 
 ---
 
 ## System Architecture
 
-This application adopts a **modular Shiny framework** for clarity, testability, and maintainability:
+The application is a single-file Shiny app (`app.R`) with a clear separation of user interface and server logic:
 
 1. **UI Layer**
    Defined via `fluidPage()` and `navbarPage()`, grouping functionality into:
@@ -69,21 +102,19 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
    * Reactivity: `reactive()`, `eventReactive()` ensure immediate UI updates
    * Observers: `observe()`, `observeEvent()` handle user-driven events
 
-3. **Helper Modules**
+3. **Loaders and Helpers**
 
-   * `loadJsonData()`, `loadCsvData()`, `make_safe_id()` encapsulate parsing, validation, sanitization
+   * `loadCsvData()`, `loadJsonData()`, `loadFhirFile()`, `loadCensusData()` parse the input formats
+   * `readMeasureReportDistributions()` reads any `MeasureReport` as category/count distributions
+   * `parse_range_label()` and `map_to_report_bins()` map values and categories onto bins
 
 4. **Plotting Components**
 
-   * `ggplot2` charts via separate render functions (`renderPlot()`); a **leaflet** map render function exists but is currently commented out (see Geospatial Visualization above)
+   * `ggplot2` charts; the **Compare** overlay is made interactive with `ggiraph`
+   * A **leaflet** map render function exists but is currently commented out (see Geospatial Visualization above)
 
 5. **Data Integration Pipeline**
-   Central reactive `allData` unifies datasets from uploads, powering both visualization and statistics without redundant computations.
-
-6. **Extensibility & Testing**
-
-   * Modular structure allows adding new data sources or plot types
-   * Supports unit testing of individual functions independent of UI
+   The reactive `allData()` unifies the CSV/JSON distributions for the Combined Data and Statistics tabs; `vizData()` maps all selected sources onto the bins for the Compare tab.
 
 ---
 
@@ -97,7 +128,7 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
   install.packages(c(
     "shiny", "shinythemes", "shinyjqui",
     "jsonlite", "readr", "fhircrackr", "httr",
-    "dplyr", "tidyr", "ggplot2", "leaflet",
+    "dplyr", "tidyr", "ggplot2", "ggiraph", "leaflet",
     "DT"
   ))
   ```
@@ -133,26 +164,30 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
 1. Run the app (see Installation above) — Shiny will open it automatically in a browser window/tab.
 2. Navigate tabs:
 
-   * **Data Upload**: Upload CSV/JSON/FHIR bundle files
-   * **Census Data**: Visualize census population data and uploaded FHIR patient data
-   * **FHIR in bins**: Bin FHIR attribute values and export as a FHIR `MeasureReport`
-   * **Compare**: Compare sites side by side or overlaid, aggregate sources, and use census or FHIR bins
+   * **Data Upload**: Upload files and assign each a type (CSV/JSON, Census, FHIR); map CSV columns and choose the stratifier of multi-stratifier `MeasureReport`s
+   * **Census Data**: Investigate a single census report: age × gender distribution (composite) or age and gender totals (separate), summary and raw tables, download as JSON or PNG
+   * **FHIR in bins**: Bin the values of a FHIR attribute and export the bins as a FHIR `MeasureReport`; the bins can be reused in Compare
+   * **Compare**: Select sites, aggregate them, choose the bins (census, categories of a report, or FHIR bins) and compare them side by side or overlaid; download as CSV, JSON or `MeasureReport`
    * **Combined Data**: Combine categories, download JSON
    * **Statistics**: View summaries & category presence
 
----
+### Example files
 
-## Quality Assurance & Reproducibility
+`input_examples/` contains files for every input type:
 
-* **Version Control**: Git with feature branches & peer review
-* **Unit Testing**: Planned `testthat` coverage for core functions
-* **Documentation**: Inline comments + precise README ensure transparency
+| **Path**                                   | **Type**  | **Content**                                                    |
+|--------------------------------------------|-----------|----------------------------------------------------------------|
+| `age.json`                                 | CSV/JSON  | JSON histogram of age groups                                   |
+| `csv/patients.csv`, `csv/people-100.csv`   | CSV/JSON  | Record-level CSV files (map a category column on upload)       |
+| `fhir/hapi_batch*.json`                    | FHIR      | FHIR bundles fetched from a public HAPI test server            |
+| `MeasureReport-…-composite-zensus-2022.json`, `sex_gender_zensus/2022.json` | Census | 2022 census, composite style                 |
 
 ---
 
 ## Future Directions
 
 * **Extended FHIR Support**: Add Observations, Conditions
+* **MeasureReport `measure`**: Exported `MeasureReport`s do not yet reference a `Measure`, which FHIR R4 requires
 * **Automated Testing**: Full `testthat` suite integration
 
 ---
@@ -160,9 +195,7 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
 ## License & Citation
 
 * **License**: [MIT](LICENSE)
-* **Citation**:
-
-  > Gebhardt T., Braun S., Draeger C., Michaelis L., et al. (2025). *Interactive Medical Data App*. [https://git.uni-greifswald.de/MILA_public/DQ-App](https://git.uni-greifswald.de/MILA_public/DQ-App)
+* **Citation**: Will be added once the paper is published.
 
 ---
 
