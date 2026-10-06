@@ -136,8 +136,8 @@ The application is a single-file Shiny app (`app.R`) with a clear separation of 
 ---
 
 ## Installation
-### 1. Clone the repository:
 
+1. **Clone repository**
 
    ```bash
    git clone https://git.uni-greifswald.de/MILA_public/DQ-App.git
