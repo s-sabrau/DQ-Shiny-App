@@ -60,7 +60,7 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
    * Data Upload
    * Census Data
    * FHIR in bins
-   * Visualization
+   * Compare
    * Combined Data
    * Statistics
 
@@ -136,7 +136,7 @@ This application adopts a **modular Shiny framework** for clarity, testability, 
    * **Data Upload**: Upload CSV/JSON/FHIR bundle files
    * **Census Data**: Visualize census population data and uploaded FHIR patient data
    * **FHIR in bins**: Bin FHIR attribute values and export as a FHIR `MeasureReport`
-   * **Visualization**: Arrange & filter mini-plots
+   * **Compare**: Compare sites side by side or overlaid, aggregate sources, and use census or FHIR bins
    * **Combined Data**: Combine categories, download JSON
    * **Statistics**: View summaries & category presence
 

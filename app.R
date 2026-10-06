@@ -1,14 +1,3 @@
-# -------------------------------------------------------------------------------
-# Title:        Interactive Medical Data App
-# Authors:      Sarah Braun, Christian Draeger, Lea Michaelis,
-#               Sherry Freiesleben, Dagmar Waltemath,
-#               Matthias Löbe, Judith Wodke
-# Date:         2025-01-08
-# Contact:      sarah.braun@med.uni-greifswald.de
-# Description:  Shiny dashboard for uploading, combining, visualizing,
-#               and summarizing CSV/JSON/FHIR datasets.
-# -------------------------------------------------------------------------------
-
 # use this if the ragg renderer doesn't work, it defaults to the standard renderer than
 options(shiny.useragg = FALSE)
 
@@ -35,6 +24,118 @@ make_safe_id <- function(x) {
   id <- gsub("[^[:alnum:]_]", "_", x)
   id <- gsub("_+", "_", id)
   gsub("^_|_$", "", id)
+}
+
+# Helper: parse a range label into a (low, high) pair, c(NA, NA) if it is none
+# Supported formats:  "0-17"  "18-34"  "65+"  "under 18"  "80 and over"  "42"
+parse_range_label <- function(lbl) {
+  lbl <- trimws(lbl)
+  if (is.na(lbl)) return(c(NA, NA))
+  # Pattern: "65+" or "65 and over" or "65 and older" → [65, Inf)
+  if (grepl("^(\\d+)\\s*\\+$", lbl) ||
+      grepl("^(\\d+)\\s+and\\s+(over|older|above)", lbl, ignore.case = TRUE) ||
+      grepl("^(\\d+)\\s+or\\s+(over|older|above)", lbl, ignore.case = TRUE)) {
+    lo <- as.numeric(sub("^(\\d+).*", "\\1", lbl))
+    return(c(lo, Inf))
+  }
+  # Pattern: "under 18" or "less than 18" → [0, 17]
+  if (grepl("^under\\s+(\\d+)$", lbl, ignore.case = TRUE) ||
+      grepl("^less\\s+than\\s+(\\d+)$", lbl, ignore.case = TRUE)) {
+    hi <- as.numeric(sub("\\D*(\\d+)$", "\\1", lbl)) - 1
+    return(c(0, hi))
+  }
+  # Pattern: "18-34" or "18 to 34" or "18–34"
+  m <- regmatches(lbl, regexpr("^(\\d+)\\s*[-–to]+\\s*(\\d+)$", lbl))
+  if (length(m) == 1) {
+    nums <- as.numeric(regmatches(m, gregexpr("\\d+", m))[[1]])
+    return(c(nums[1], nums[2]))
+  }
+  # Single number label – exact match
+  n <- suppressWarnings(as.numeric(lbl))
+  if (!is.na(n)) return(c(n, n))
+  c(NA, NA)
+}
+
+# Helper: read a FHIR MeasureReport (e.g. a DQ-SR) as Category/Count
+# distributions, one per stratifier, plus one over the groups when several
+# groups carry no stratifier. Only the FHIR structure is used (R4 and R5).
+# Returns a named list of data frames; the names describe group and stratifier.
+readMeasureReportDistributions <- function(mr) {
+  `%||%` <- function(x, y) if (is.null(x) || length(x) == 0) y else x
+
+  # Text of a CodeableConcept (or of the first one in a list of them)
+  concept_text <- function(cc) {
+    if (is.null(cc) || length(cc) == 0) return(NA_character_)
+    if (is.null(names(cc))) cc <- cc[[1]]
+    as.character(cc$text %||% cc$coding[[1]]$display %||% cc$coding[[1]]$code %||% NA_character_)
+  }
+  # Value of a stratum or stratum component: R4 value, or R5 value[x]
+  value_text <- function(x) {
+    if (!is.null(x$valueBoolean)) return(tolower(as.character(x$valueBoolean)))
+    if (!is.null(x$valueQuantity$value)) return(as.character(x$valueQuantity$value))
+    if (!is.null(x$valueRange)) {
+      lo <- x$valueRange$low$value
+      hi <- x$valueRange$high$value
+      return(if (is.null(hi)) paste0(lo %||% 0, "+") else paste0(lo %||% 0, "-", hi))
+    }
+    concept_text(x$value %||% x$valueCodeableConcept)
+  }
+  stratum_label <- function(s) {
+    if (!is.null(s$component)) {
+      paste(vapply(s$component, value_text, character(1)), collapse = " · ")
+    } else {
+      value_text(s)
+    }
+  }
+  # Initial population count, else the first population, else the measure score
+  count_of <- function(x) {
+    pops <- x$population %||% list()
+    ip   <- Filter(function(p) identical(p$code$coding[[1]]$code, "initial-population"), pops)
+    if (length(ip) == 0) ip <- pops
+    count <- if (length(ip) > 0) ip[[1]]$count else NULL
+    as.numeric(count %||% x$measureScore$value %||% x$measureScoreQuantity$value %||%
+                 x$measureScoreDecimal %||% NA_real_)
+  }
+  to_df <- function(category, count) {
+    category[is.na(category) | category == ""] <- "unknown"
+    df <- data.frame(Category = category, Count = count, stringsAsFactors = FALSE)
+    df[!is.na(df$Count), ]
+  }
+
+  groups   <- mr$group %||% list()
+  g_labels <- vapply(seq_along(groups), function(i) {
+    lbl <- concept_text(groups[[i]]$code)
+    if (is.na(lbl)) paste("Group", i) else lbl
+  }, character(1))
+
+  dists <- list()
+  for (gi in seq_along(groups)) {
+    strats <- groups[[gi]]$stratifier %||% list()
+    for (si in seq_along(strats)) {
+      s      <- strats[[si]]
+      strata <- s$stratum %||% list()
+      if (length(strata) == 0) next
+      s_label <- concept_text(s$code)
+      if (is.na(s_label) && !is.null(strata[[1]]$component)) {
+        s_label <- paste(vapply(strata[[1]]$component, function(c) concept_text(c$code), character(1)),
+                         collapse = " × ")
+      }
+      if (is.na(s_label)) s_label <- paste("Stratifier", si)
+      label <- if (length(groups) > 1) paste0(g_labels[gi], ": ", s_label) else s_label
+      dists[[label]] <- to_df(vapply(strata, stratum_label, character(1)),
+                              vapply(strata, count_of, numeric(1)))
+    }
+  }
+
+  # Groups without strata, e.g. one group per data element
+  plain <- vapply(groups, function(g) length(g$stratifier %||% list()) == 0, logical(1))
+  if (sum(plain) > 1) {
+    dists[["Groups"]] <- to_df(g_labels[plain], vapply(groups[plain], count_of, numeric(1)))
+  }
+
+  if (length(dists) == 0) return(list())
+  names(dists) <- make.unique(names(dists), sep = " ")
+  Filter(function(d) nrow(d) > 0, dists)
 }
 
 # Get all unique categories across all datasets for consistent x-axis
@@ -184,9 +285,12 @@ ui <- fluidPage(
                         ),
                         mainPanel(
                           h4("Uploaded Datasets"),
-                          span("Upload your files and assign each a type. Files will be used in the corresponding tabs."),
+                          span("Upload your files and assign each a type. Files will be used in the corresponding tabs.",
+                               "\"CSV/JSON\" covers value distributions: CSV files and FHIR MeasureReports such as DQ-SRs;",
+                               "\"Census\" is for age × gender MeasureReports."),
                           hr(),
-                          tableOutput("dataList")
+                          tableOutput("dataList"),
+                          uiOutput("mappingUI")
                         )
                       )
              ),
@@ -196,14 +300,12 @@ ui <- fluidPage(
                         sidebarPanel(
                           h4("Data Selection"),
                           uiOutput("censusFileSelector"),
-                          uiOutput("fhirFileSelector"),
                           h4("Visualization Options"),
                           selectInput("census_chart_type", "Chart Type:",
                                       choices = c("Grouped Bar Chart" = "grouped",
                                                   "Stacked Bar Chart" = "stacked"),
                                       selected = "grouped"),
                           checkboxInput("census_show_values", "Show Values on Bars", FALSE),
-                          checkboxInput("census_log_scale", "Log Scale (Y-axis)", FALSE),
                           hr(),
                           downloadButton("downloadCensusData", "Download Census Data (JSON)"),
                           br(), br(),
@@ -217,13 +319,7 @@ ui <- fluidPage(
                           tableOutput("censusSummaryTable"),
                           hr(),
                           h4("Raw Census Data"),
-                          DT::dataTableOutput("censusDataTable"),
-                          hr(),
-                          h4("FHIR Patient Data Summary"),
-                          tableOutput("fhirSummaryTable"),
-                          hr(),
-                          h4("Raw FHIR Patient Data"),
-                          DT::dataTableOutput("fhirDataTable")
+                          DT::dataTableOutput("censusDataTable")
                         )
                       )
              ),
@@ -267,21 +363,38 @@ ui <- fluidPage(
                   )
                 ),
              ),
-             # -- Visualization Tab --
-             tabPanel("Visualization",
+             # -- Compare Tab --
+             tabPanel("Compare",
                       sidebarLayout(
                         sidebarPanel(
                           h4("Data Sources"),
                           uiOutput("vizSourceSelector"),
                           hr(),
+                          h4("Aggregate Sources"),
+                          p("Sum the counts of several sources into one; the aggregate is added to the sources above.",
+                            style = "color:#666; font-size:12px;"),
+                          textInput("viz_group_name", "Name:", placeholder = "e.g. All sites"),
+                          uiOutput("vizGroupMemberSelector"),
+                          actionButton("viz_add_group", "Add aggregate", icon = icon("layer-group"),
+                                       class = "btn-sm"),
+                          uiOutput("vizGroupList"),
+                          hr(),
                           h4("Binning"),
                           radioButtons("viz_bin_type", "Use bins from:",
-                                       choices = c("Census (Age × Gender)" = "census",
-                                                   "FHIR in Bins"          = "fhir_bins"),
+                                       choices = c("Census (Age × Gender)"   = "census",
+                                                   "Categories of a report" = "report",
+                                                   "FHIR in Bins"           = "fhir_bins"),
                                        selected = "census"),
                           conditionalPanel(
                             condition = "input.viz_bin_type == 'census'",
                             checkboxInput("viz_combine_gender", "Combine male and female", FALSE)
+                          ),
+                          conditionalPanel(
+                            condition = "input.viz_bin_type == 'report'",
+                            uiOutput("vizBinReportSelector"),
+                            p("Categories of the other sources are matched by name or by numeric range.",
+                              "FHIR bundles use the attribute chosen in the \"FHIR in bins\" tab.",
+                              style = "color:#666; font-size:12px;")
                           ),
                           hr(),
                           h4("Display"),
@@ -314,9 +427,19 @@ ui <- fluidPage(
                               sliderInput("viz_overlay_alpha", "Transparency:",
                                           min = 0.1, max = 1, value = 0.5, step = 0.05)
                             )
-                          )
+                          ),
+                          hr(),
+                          h4("Download"),
+                          p("Counts and percentages of the shown sources, including aggregates, in the selected bins.",
+                            style = "color:#666; font-size:12px;"),
+                          downloadButton("vizDownloadCsv",  "CSV",  class = "btn-sm"),
+                          downloadButton("vizDownloadJson", "JSON", class = "btn-sm"),
+                          downloadButton("vizDownloadMeasureReport", "MeasureReport", class = "btn-sm"),
+                          p("The MeasureReport holds one group per shown source, stratified by the bins.",
+                            style = "color:#666; font-size:12px; margin-top:6px;")
                         ),
                         mainPanel(
+                          uiOutput("vizInfoBox"),
                           uiOutput("vizPlotsUI")
                         )
                       )
@@ -379,8 +502,20 @@ server <- function(input, output, session) {
   lastCensusPlot <- reactiveVal(NULL)
 
   # 4.1 Load JSON data
-  loadJsonData <- function(path) {
+  # A MeasureReport yields the distribution chosen in the upload tab (default: first)
+  loadJsonData <- function(path, filename = basename(path)) {
     tryCatch({
+      raw <- fromJSON(path, simplifyVector = FALSE)
+      if (identical(raw$resourceType, "MeasureReport")) {
+        dists  <- readMeasureReportDistributions(raw)
+        if (length(dists) == 0) {
+          warning(paste("MeasureReport", filename, "holds no stratifier or group counts"))
+          return(data.frame(Category = character(), Count = numeric(), stringsAsFactors = FALSE))
+        }
+        choice <- input[[paste0("map_mr_", make_safe_id(filename))]]
+        return(dists[[if (!is.null(choice) && choice %in% names(dists)) choice else 1]])
+      }
+
       jd <- fromJSON(path)
 
       # Check if the expected structure exists
@@ -405,17 +540,20 @@ server <- function(input, output, session) {
   }
 
   # 4.2 Load CSV data with optional column mapping
-  loadCsvData <- function(path, idx) {
-    df <- read.csv(path, stringsAsFactors = FALSE)
+  # The mapping input is keyed by file name, so it survives reordering of the file list
+  loadCsvData <- function(path, filename) {
+    df <- read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
 
     # If the CSV already has Category and Count columns, use them directly
     if (all(c("Category", "Count") %in% colnames(df))) {
-      df$Count <- as.numeric(df$Count)
+      df <- data.frame(Category = trimws(as.character(df$Category)),
+                       Count    = suppressWarnings(as.numeric(df$Count)),
+                       stringsAsFactors = FALSE)
       return(df[!is.na(df$Count), ])
     }
 
     # Otherwise, we need column mapping
-    category_col <- input[[paste0("map_cat_", idx)]]
+    category_col <- input[[paste0("map_cat_", make_safe_id(filename))]]
 
     # If no category column is selected yet, return empty data frame
     if (is.null(category_col) || category_col == "") {
@@ -427,17 +565,42 @@ server <- function(input, output, session) {
       return(data.frame(Category = character(), Count = numeric(), stringsAsFactors = FALSE))
     }
 
-    # Count occurrences of each category
+    # With a count column the CSV already holds a distribution: sum it per
+    # category; without one, every row is a single record
+    count_col <- input[[paste0("map_cnt_", make_safe_id(filename))]]
+    weights   <- if (!is.null(count_col) && count_col %in% colnames(df)) {
+      suppressWarnings(as.numeric(df[[count_col]]))
+    } else {
+      rep(1, nrow(df))
+    }
+
     tryCatch({
-      result <- df %>%
-        count(Category = .data[[category_col]], name = "Count") %>%
+      category <- trimws(as.character(df[[category_col]]))
+      category[is.na(category) | category == ""] <- "unknown"
+      result <- data.frame(Category = category, w = weights, stringsAsFactors = FALSE) %>%
+        filter(!is.na(w)) %>%
+        group_by(Category) %>%
+        summarise(Count = sum(w), .groups = "drop") %>%
         as.data.frame(stringsAsFactors = FALSE)
 
-      result$Count <- as.numeric(result$Count)
-      result[!is.na(result$Count), ]
+      result[result$Count > 0, ]
     }, error = function(e) {
       # If there's any error, return empty data frame
       data.frame(Category = character(), Count = numeric(), stringsAsFactors = FALSE)
+    })
+  }
+
+  # 4.2.1 Load a "CSV/JSON" file as a Category/Count distribution (NULL on failure)
+  loadCsvJsonFile <- function(f) {
+    tryCatch({
+      switch(tolower(tools::file_ext(f$name)),
+             "json" = loadJsonData(f$path, f$name),
+             "csv"  = loadCsvData(f$path, f$name),
+             NULL
+      )
+    }, error = function(e) {
+      warning(paste("Error processing file", f$name, ":", e$message))
+      NULL
     })
   }
 
@@ -613,13 +776,13 @@ server <- function(input, output, session) {
 
   # 4.3.1 Dynamic UI: mapping CSV columns
   output$mappingUI <- renderUI({
-    req(input$dataFiles)
-    fps <- input$dataFiles$datapath
-    fns <- input$dataFiles$name
-    uiList <- lapply(seq_along(fps), function(i) {
-      if (tools::file_ext(fns[i]) == "csv") {
-        df0 <- read.csv(fps[i], stringsAsFactors = FALSE)
-
+    csv_files <- Filter(function(f) f$type == "csv_json" && tolower(tools::file_ext(f$name)) == "csv",
+                        uploadedFiles())
+    uiList <- lapply(csv_files, function(f) {
+      df0 <- tryCatch(read.csv(f$path, stringsAsFactors = FALSE, check.names = FALSE, nrows = 1),
+                      error = function(e) NULL)
+      # Files that already carry Category and Count columns need no mapping
+      if (!is.null(df0) && !all(c("Category", "Count") %in% colnames(df0))) {
         # Sort column names - group by resource type prefix, then alphabetically
         col_names <- colnames(df0)
 
@@ -650,18 +813,55 @@ server <- function(input, output, session) {
           sorted_cols <- sort(col_names)
         }
 
-        #if (!all(c("Category","Count") %in% colnames(df0))) {
-        tagList(
-          h4(paste("Map columns for", fns[i])),
-          selectInput(paste0("map_cat_", i),
-                      "Category column:", choices = sorted_cols),
-          #selectInput(paste0("map_cnt_", i),
-          #            "Count column:",    choices = sorted_cols)
+        safe_name <- make_safe_id(f$name)
+        cat_id    <- paste0("map_cat_", safe_name)
+        cnt_id    <- paste0("map_cnt_", safe_name)
+        # Keep the user's choice when the file list re-renders
+        cat_sel   <- isolate(input[[cat_id]]) %||% sorted_cols[1]
+        cnt_sel   <- isolate(input[[cnt_id]]) %||% ""
+
+        div(style = "padding:8px; border:1px solid #DDD; border-radius:4px; margin-bottom:8px;",
+            h5(strong(f$name)),
+            selectInput(cat_id, "Category column:", choices = sorted_cols, selected = cat_sel),
+            selectInput(cnt_id, "Count column:",
+                        choices  = c("None (count rows)" = "", sorted_cols),
+                        selected = cnt_sel)
         )
-        #}
       }
     })
-    do.call(tagList, uiList)
+    uiList <- Filter(Negate(is.null), uiList)
+
+    # MeasureReports with several stratifiers: choose the distribution to use
+    json_files <- Filter(function(f) f$type == "csv_json" && tolower(tools::file_ext(f$name)) == "json",
+                         uploadedFiles())
+    mrList <- lapply(json_files, function(f) {
+      raw <- tryCatch(fromJSON(f$path, simplifyVector = FALSE), error = function(e) NULL)
+      if (!identical(raw$resourceType, "MeasureReport")) return(NULL)
+      dists <- names(readMeasureReportDistributions(raw))
+      if (length(dists) < 2) return(NULL)
+      mr_id <- paste0("map_mr_", make_safe_id(f$name))
+      div(style = "padding:8px; border:1px solid #DDD; border-radius:4px; margin-bottom:8px;",
+          h5(strong(f$name)),
+          selectInput(mr_id, "Distribution:", choices = dists,
+                      selected = isolate(input[[mr_id]]) %||% dists[1]))
+    })
+    mrList <- Filter(Negate(is.null), mrList)
+
+    if (length(uiList) == 0 && length(mrList) == 0) return(NULL)
+    tagList(
+      if (length(uiList) > 0) tagList(
+        h4("CSV Column Mapping"),
+        span("Choose which column holds the categories. If the CSV already contains a distribution, also pick its count column."),
+        br(), br(),
+        uiList
+      ),
+      if (length(mrList) > 0) tagList(
+        h4("MeasureReport Distribution"),
+        span("These reports hold several stratifiers. Choose the one whose strata are used as categories."),
+        br(), br(),
+        mrList
+      )
+    )
   })
 
   # 4.3.2
@@ -672,28 +872,26 @@ server <- function(input, output, session) {
       p("No census files uploaded yet. Please upload in the Data Upload tab.",
         style = "color:#999; font-size:12px;")
     } else {
-      selectInput("selected_census_file", "Census File:",
-                  choices = setNames(
-                    sapply(census_files, `[[`, "path"),
-                    sapply(census_files, `[[`, "name")
-                  ))
+      choices <- setNames(sapply(census_files, `[[`, "path"), sapply(census_files, `[[`, "name"))
+      kept    <- intersect(isolate(input$selected_census_file), choices)
+      selectInput("selected_census_file", "Census File:", choices = choices,
+                  selected = if (length(kept) > 0) kept[1] else choices[1])
     }
   })
 
-  output$fhirFileSelector <- renderUI({
-    files <- uploadedFiles()
-    fhir_files <- Filter(function(f) f$type == "fhir", files)
-    if (length(fhir_files) == 0) {
-      p("No FHIR files uploaded yet. Please upload in the Data Upload tab.",
-        style = "color:#999; font-size:12px;")
-    } else {
-      selectInput("selected_fhir_file", "FHIR File:",
-                  choices = setNames(
-                    sapply(fhir_files, `[[`, "path"),
-                    sapply(fhir_files, `[[`, "name")
-                  ))
-    }
-  })
+  # A separate census report holds age totals (Gender NA) and gender totals
+  # (Age NA) instead of age x gender counts
+  is_separate_census <- function(df) any(is.na(df$Age) | is.na(df$Gender))
+
+  # The totals of a separate census report as one table: Stratifier, Category, Count
+  separate_census_totals <- function(df) {
+    ages <- df[!is.na(df$Age), ]
+    ages <- ages[order(as.numeric(sub("[-+].*", "", ages$Age))), ]
+    rbind(data.frame(Stratifier = "Age group", Category = ages$Age, Count = ages$Count,
+                     stringsAsFactors = FALSE),
+          data.frame(Stratifier = "Gender", Category = df$Gender[is.na(df$Age)],
+                     Count = df$Count[is.na(df$Age)], stringsAsFactors = FALSE))
+  }
 
   loadCensusData <- function(path) {
     tryCatch({
@@ -749,6 +947,8 @@ server <- function(input, output, session) {
 
       } else {
         # ── Separate format: two stratifiers, one for gender, one for age ──────────
+        # Without a cross-tabulation only the totals are known: age rows carry no
+        # gender and gender rows no age group (see is_separate_census())
         # Identify which stratifier is gender and which is age by LOINC code
         get_loinc <- function(strat) {
           tryCatch({
@@ -766,45 +966,23 @@ server <- function(input, output, session) {
         }
 
         # Fallback: if LOINC codes not found, use position (first=gender, second=age)
+        if (length(stratifiers) < 2) {
+          warning("A separate census report needs an age and a gender stratifier")
+          return(NULL)
+        }
         if (is.null(gender_strat)) gender_strat <- stratifiers[[1]]
         if (is.null(age_strat))    age_strat    <- stratifiers[[2]]
 
-        # Extract genders
-        genders <- lapply(gender_strat$stratum, function(s) {
-          list(
-            value = s$value$text %||% NA,
-            count = as.numeric(s$population[[1]]$count %||% 0)
-          )
-        })
-
-        # Extract age groups
-        ages <- lapply(age_strat$stratum, function(s) {
-          list(
-            value = s$value$text %||% NA,
-            count = as.numeric(s$population[[1]]$count %||% 0)
-          )
-        })
-
-        total <- sum(sapply(genders, `[[`, "count"), na.rm = TRUE)
-
-        # Cross-tabulate: distribute counts proportionally across age × gender
-        # Since separate format has no cross-tabulation, estimate each cell as:
-        # count(age_i) * count(gender_j) / total
-        rows <- lapply(ages, function(a) {
-          lapply(genders, function(g) {
-            estimated_count <- if (total > 0) {
-              round(a$count * g$count / total)
-            } else 0
-            data.frame(
-              Age    = a$value,
-              Gender = g$value,
-              Count  = estimated_count,
-              stringsAsFactors = FALSE
-            )
+        totals <- function(strat, column) {
+          lapply(strat$stratum, function(s) {
+            value <- as.character(s$value$text %||% NA_character_)
+            data.frame(Age    = if (column == "Age")    value else NA_character_,
+                       Gender = if (column == "Gender") value else NA_character_,
+                       Count  = as.numeric(s$population[[1]]$count %||% 0),
+                       stringsAsFactors = FALSE)
           })
-        })
-
-        census_df <- do.call(rbind, unlist(rows, recursive = FALSE))
+        }
+        census_df <- do.call(rbind, c(totals(age_strat, "Age"), totals(gender_strat, "Gender")))
       }
 
       if (is.null(census_df) || nrow(census_df) == 0) {
@@ -812,7 +990,11 @@ server <- function(input, output, session) {
         return(NULL)
       }
 
-      census_df <- census_df[!is.na(census_df$Age) & !is.na(census_df$Gender), ]
+      census_df <- if (is_composite) {
+        census_df[!is.na(census_df$Age) & !is.na(census_df$Gender), ]
+      } else {
+        census_df[!is.na(census_df$Age) | !is.na(census_df$Gender), ]
+      }
       census_df$Count <- as.numeric(census_df$Count)
       return(census_df)
 
@@ -1010,38 +1192,22 @@ server <- function(input, output, session) {
   # 4.5.2 Aggregate uploaded/FHIR datasets
 
   allData <- reactive({
-    req(input$data_source)
+    # The data source selector was removed from the UI; uploaded files are the default
+    data_source <- input$data_source %||% "file"
     files <- uploadedFiles()
     csv_json_files <- Filter(function(f) f$type == "csv_json", files)
 
-    if (input$data_source == "file") {
+    if (data_source == "file") {
       if (length(csv_json_files) == 0) return(list())
 
-      results <- lapply(seq_along(csv_json_files), function(i) {
-        f   <- csv_json_files[[i]]
-        ext <- tools::file_ext(f$name)
-
-        df <- tryCatch({
-          switch(ext,
-                 "json" = loadJsonData(f$path),
-                 "csv"  = loadCsvData(f$path, i),
-                 NULL
-          )
-        }, error = function(e) {
-          warning(paste("Error processing file", f$name, ":", e$message))
-          NULL
-        })
-
-        if (!is.null(df) && nrow(df) > 0) {
-          list(name = f$name, data = df)
-        } else {
-          NULL
-        }
+      results <- lapply(csv_json_files, function(f) {
+        df <- loadCsvJsonFile(f)
+        if (!is.null(df) && nrow(df) > 0) list(name = f$name, data = df) else NULL
       })
 
-      results[!sapply(results, is.null)]
+      return(results[!sapply(results, is.null)])
 
-    } else if (input$data_source == "fhir") {
+    } else if (data_source == "fhir") {
       fhir_data <- fhirRawData()
       if (!is.null(fhir_data) && length(fhir_data) > 0) {
         results <- list()
@@ -1218,6 +1384,20 @@ server <- function(input, output, session) {
   })
 
   # 4.10 Combine data across files (robust)
+  # Category pickers for every file chosen in "Select Files to Combine"
+  output$valueSelectors <- renderUI({
+    req(input$combineFiles)
+    dl <- allData()
+    tagList(lapply(Filter(function(d) d$name %in% input$combineFiles, dl), function(d) {
+      id   <- paste0("values_", make_safe_id(d$name))
+      cats <- unique(d$data$Category)
+      selectizeInput(id, paste("Categories of", d$name),
+                     choices  = cats,
+                     selected = intersect(isolate(input[[id]]) %||% cats, cats),
+                     multiple = TRUE)
+    }))
+  })
+
   combinedData <- reactiveVal(NULL)
   observeEvent(input$combineData, {
     req(input$combineFiles)
@@ -1330,245 +1510,102 @@ server <- function(input, output, session) {
 
 
   #### Census data reactive
+  # The selected census report; it also provides the census bins in the Compare tab
   censusData <- reactive({
     req(input$selected_census_file)
-    census_df <- loadCensusData(input$selected_census_file)
+    f <- Find(function(f) f$path == input$selected_census_file, uploadedFiles())
+    req(f)
+    census_df <- loadCensusData(f$path)
     if (is.null(census_df)) {
-      showNotification("Failed to load census data.", type = "error")
+      showNotification(paste("Failed to load census data from", f$name), type = "error")
       return(NULL)
     }
-    census_df$Source <- "Census"
+    census_df$Source <- tools::file_path_sans_ext(f$name)
     showNotification(paste("Loaded", nrow(census_df), "census records"), type = "message")
-    return(census_df)
+    census_df
   })
 
-  fhirPatientData <- reactive({
-    req(censusData())
-
-    census_df            <- censusData()
-    census_age_labels    <- unique(census_df$Age)
-    census_gender_labels <- unique(census_df$Gender)
-
-    tryCatch({
-      req(input$selected_fhir_file)
-      raw <- jsonlite::fromJSON(input$selected_fhir_file, simplifyVector = FALSE)
-
-      entries <- NULL
-      if (!is.null(raw$resourceType) && raw$resourceType == "Bundle") {
-        entries <- raw$entry
-      } else if (is.list(raw)) {
-        entries <- raw
-      }
-
-      if (is.null(entries) || length(entries) == 0) {
-        showNotification("No entries found in FHIR bundle.", type = "warning")
-        return(NULL)
-      }
-
-      patients <- Filter(function(e) {
-        res <- if (!is.null(e$resource)) e$resource else e
-        !is.null(res$resourceType) && res$resourceType == "Patient"
-      }, entries)
-
-      if (length(patients) == 0) {
-        showNotification("No Patient resources found in FHIR bundle.", type = "warning")
-        return(NULL)
-      }
-
-      records <- lapply(patients, function(e) {
-        p      <- if (!is.null(e$resource)) e$resource else e
-        bd     <- p$birthDate %||% NA_character_
-        gender <- p$gender    %||% NA_character_
-        list(birthDate = as.character(bd), gender = as.character(gender))
-      })
-
-      df <- data.frame(
-        birthDate = sapply(records, `[[`, "birthDate"),
-        gender    = sapply(records, `[[`, "gender"),
-        stringsAsFactors = FALSE
-      )
-
-      today <- Sys.Date()
-
-      df$age_numeric <- sapply(df$birthDate, function(bd) {
-        if (is.null(bd) || is.na(bd) || !nzchar(trimws(bd))) return(NA_real_)
-
-        bd <- trimws(bd)
-        bd <- sub("T.*$", "", bd)
-
-        bd_padded <- if (nchar(bd) == 4)      paste0(bd, "-01-01")
-        else if (nchar(bd) == 7) paste0(bd, "-01")
-        else                     bd
-
-        dob <- tryCatch(as.Date(bd_padded), error = function(e) NA)
-
-        if (is.null(dob) || length(dob) == 0 || is.na(dob)) return(NA_real_)
-        if (dob >= today || dob < as.Date("1900-01-01"))     return(NA_real_)
-
-        year_diff       <- as.numeric(format(today, "%Y")) - as.numeric(format(dob, "%Y"))
-        birthday_passed <- format(today, "%m-%d") >= format(dob, "%m-%d")
-        as.numeric(year_diff - ifelse(birthday_passed, 0L, 1L))
-      })
-
-      df$Age    <- bin_age_to_census_groups(df$age_numeric, census_age_labels)
-      df$Gender <- map_fhir_gender(df$gender, census_gender_labels)
-      df        <- df[!is.na(df$Age) & !is.na(df$Gender), ]
-
-      if (nrow(df) == 0) {
-        showNotification(
-          "FHIR patients could not be matched to census Age/Gender groups.",
-          type = "warning"
-        )
-        return(NULL)
-      }
-
-      result <- df %>%
-        dplyr::count(Age, Gender, name = "Count") %>%
-        as.data.frame(stringsAsFactors = FALSE)
-
-      result$Source <- "FHIR"
-
-      showNotification(
-        paste0("FHIR: ", nrow(df), " patients matched across ",
-               nrow(result), " Age×Gender groups"),
-        type = "message"
-      )
-
-      return(result)
-
-    }, error = function(e) {
-      showNotification(paste("Error parsing FHIR bundle:", e$message), type = "error")
-      return(NULL)
-    })
-  })
-
-  # Census plot
   output$censusPlot <- renderPlot({
     req(censusData())
 
     census_df  <- censusData()
-    fhir_df    <- fhirPatientData()     # NULL if no FHIR file uploaded yet — that's fine
 
     chart_type  <- input$census_chart_type
     show_values <- input$census_show_values
 
-    # ── Combine census + FHIR (if available) ────────────────────────────────────
-    if (!is.null(fhir_df)) {
-      # Keep only Age groups and Genders present in census so axes stay consistent
-      fhir_df <- fhir_df[fhir_df$Age    %in% unique(census_df$Age) &
-                           fhir_df$Gender %in% unique(census_df$Gender), ]
+    # A separate report has no age x gender counts: one panel per stratifier
+    if (is_separate_census(census_df)) {
+      plot_df <- separate_census_totals(census_df) %>%
+        group_by(Stratifier) %>%
+        mutate(Percent = round(Count / sum(Count, na.rm = TRUE) * 100, 2)) %>%
+        ungroup()
+      plot_df$Category <- factor(plot_df$Category, levels = unique(plot_df$Category))
 
-      plot_df <- rbind(
-        census_df[, c("Age", "Gender", "Count", "Source")],
-        fhir_df  [, c("Age", "Gender", "Count", "Source")]
-      )
-
-      # Interaction label used for fill: e.g. "female · Census", "male · FHIR"
-      plot_df$fill_group <- paste(plot_df$Gender, "\u00b7", plot_df$Source)
-
-      # Colour palette: one hue per gender (from Set2), light shade = Census, dark = FHIR
-      genders      <- sort(unique(census_df$Gender))
-      base_colours <- RColorBrewer::brewer.pal(max(3, length(genders)), "Set2")[seq_along(genders)]
-
-      # Census uses Set2 (soft greens/blues/oranges), FHIR uses Dark2 (bold versions)
-      census_colours <- RColorBrewer::brewer.pal(max(3, length(genders)), "Set2")[seq_along(genders)]
-      fhir_colours   <- RColorBrewer::brewer.pal(max(3, length(genders)), "Dark2")[seq_along(genders)]
-
-      fill_vals <- c()
-      for (k in seq_along(genders)) {
-        census_lbl <- paste(genders[k], "\u00b7 Census")
-        fhir_lbl   <- paste(genders[k], "\u00b7 FHIR")
-        fill_vals[census_lbl] <- census_colours[k]
-        fill_vals[fhir_lbl]   <- fhir_colours[k]
+      p <- ggplot(plot_df, aes(x = Category, y = Percent, fill = Stratifier)) +
+        geom_bar(stat = "identity", colour = "white", linewidth = 0.2) +
+        facet_grid(~Stratifier, scales = "free_x", space = "free_x") +
+        theme_minimal(base_size = 14) +
+        labs(
+          title    = "Population by Age Group and by Gender",
+          subtitle = paste(census_df$Source[1],
+                           "\u00b7 separate report: age and gender totals, no age \u00d7 gender counts"),
+          x        = NULL,
+          y        = "Population (%)"
+        ) +
+        theme(
+          axis.text.x     = element_text(angle = 45, hjust = 1),
+          legend.position = "none",
+          plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+          plot.subtitle   = element_text(hjust = 0.5)
+        ) +
+        scale_fill_brewer(palette = "Set2")
+      if (show_values) {
+        p <- p + geom_text(aes(label = Count), vjust = -0.4, size = 2.8)
       }
-
-      overlay_active <- TRUE
-    } else {
-      # No FHIR data — plot census only exactly as before
-      plot_df <- census_df[, c("Age", "Gender", "Count", "Source")]
-      plot_df$fill_group <- plot_df$Gender
-
-      fill_vals      <- NULL    # fall back to scale_fill_brewer below
-      overlay_active <- FALSE
+      lastCensusPlot(p)
+      return(p)
     }
 
-    plot_df <- plot_df %>%
-      group_by(Source) %>%
-      mutate(Percent = round(Count / sum(Count, na.rm = TRUE) * 100, 2)) %>%
-      ungroup()
+    plot_df <- census_df[, c("Age", "Gender", "Count")]
+    plot_df$Percent <- round(plot_df$Count / sum(plot_df$Count, na.rm = TRUE) * 100, 2)
 
     age_order <- unique(plot_df$Age[order(as.numeric(sub("[-+].*", "", plot_df$Age)))])
     plot_df$Age <- factor(plot_df$Age, levels = age_order)
-    # ── Base ggplot ──────────────────────────────────────────────────────────────
-    p <- ggplot(plot_df, aes(x = Age, y = Percent, fill = fill_group)) +
+
+    p <- ggplot(plot_df, aes(x = Age, y = Percent, fill = Gender)) +
       theme_minimal(base_size = 14) +
       labs(
-        title = if (overlay_active) "Population by Age Group and Gender  (Census vs FHIR)"
-        else                "Population by Age Group and Gender",
-        x     = "Age Group",
-        y = "Population (%)",
-        fill  = if (overlay_active) "Gender \u00b7 Source" else "Gender"
+        title    = "Population by Age Group and Gender",
+        subtitle = census_df$Source[1],
+        x        = "Age Group",
+        y        = "Population (%)",
+        fill     = "Gender"
       ) +
       theme(
-        axis.text.x  = element_text(angle = 45, hjust = 1),
+        axis.text.x     = element_text(angle = 45, hjust = 1),
         legend.position = "bottom",
-        plot.title   = element_text(hjust = 0.5, face = "bold", size = 16)
-      )
-
-    # Apply manual colours when FHIR overlay is active
-    if (overlay_active) {
-      p <- p + scale_fill_manual(values = fill_vals)
-    } else {
-      p <- p + scale_fill_brewer(palette = "Set2")
-    }
+        plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+        plot.subtitle   = element_text(hjust = 0.5)
+      ) +
+      scale_fill_brewer(palette = "Set2")
 
     # ── Geoms based on chart type ────────────────────────────────────────────────
-    dodge_width <- if (overlay_active) 0.85 else 0.9   # slightly tighter when doubled
-
-    if (chart_type == "grouped" || chart_type == "dodged") {
-      p <- p + geom_bar(stat = "identity",
-                        position = position_dodge(width = dodge_width),
-                        alpha = 1,
+    if (chart_type == "stacked") {
+      p <- p + geom_bar(stat = "identity", position = "stack", alpha = 1,
                         colour = "white", linewidth = 0.2)
-      if (show_values) {
-        p <- p + geom_text(aes(label = Count),
-                           position = position_dodge(width = dodge_width),
-                           vjust = -0.4, size = 2.8)
-      }
-
-    } else if (chart_type == "stacked") {
-      p <- ggplot(plot_df, aes(x = Age, y = Percent, fill = fill_group)) +
-        theme_minimal(base_size = 14) +
-        labs(
-          title = if (overlay_active) "Population by Age Group and Gender  (Census vs FHIR)"
-          else "Population by Age Group and Gender",
-          x     = "Age Group",
-          y     = "Population (%)",
-          fill  = if (overlay_active) "Gender · Source" else "Gender"
-        ) +
-        theme(
-          axis.text.x  = element_text(angle = 45, hjust = 1),
-          legend.position = "bottom",
-          plot.title   = element_text(hjust = 0.5, face = "bold", size = 16)
-        ) +
-        geom_bar(stat = "identity", position = "stack", alpha = 1,
-                 colour = "white", linewidth = 0.2) +
-        {if (overlay_active) facet_wrap(~Source, ncol = 2) else NULL} +
-        {if (overlay_active) scale_fill_manual(values = fill_vals)
-          else scale_fill_brewer(palette = "Set2")}
-
       if (show_values) {
         p <- p + geom_text(aes(label = paste0(Percent, "%")),
                            position = position_stack(vjust = 0.5), size = 2.8)
       }
+    } else {
+      p <- p + geom_bar(stat = "identity", position = position_dodge(width = 0.9),
+                        alpha = 1, colour = "white", linewidth = 0.2)
+      if (show_values) {
+        p <- p + geom_text(aes(label = Count), position = position_dodge(width = 0.9),
+                           vjust = -0.4, size = 2.8)
+      }
     }
 
-    if (isTRUE(input$census_log_scale)) {
-      p <- p + scale_y_continuous(
-        trans = "log10",
-        labels = scales::comma
-      )
-    }
     lastCensusPlot(p)
     return(p)
   })
@@ -1586,13 +1623,24 @@ server <- function(input, output, session) {
 
     df <- censusData()
 
+    if (is_separate_census(df)) {
+      return(separate_census_totals(df) %>%
+               group_by(Stratifier) %>%
+               summarise(Total_Population = sum(Count, na.rm = TRUE),
+                         Categories = n(),
+                         Average_per_Category = round(mean(Count, na.rm = TRUE), 0),
+                         .groups = "drop") %>%
+               as.data.frame())
+    }
+
     # Create summary statistics
     summary_df <- df %>%
       group_by(Gender) %>%
       summarise(
         Total_Population = sum(Count, na.rm = TRUE),
         Age_Groups = n_distinct(Age),
-        Average_per_Group = round(mean(Count, na.rm = TRUE), 0)
+        Average_per_Group = round(mean(Count, na.rm = TRUE), 0),
+        .groups = "drop"
       ) %>%
       as.data.frame()
 
@@ -1605,11 +1653,15 @@ server <- function(input, output, session) {
 
     df <- censusData()
 
-    # Sort age groups numerically
-    age_order <- unique(df$Age[order(as.numeric(sub("[-+].*", "", df$Age)))])
-    df$Age <- factor(df$Age, levels = age_order)
-    df <- df[order(df$Age), ]
-    df$Age <- as.character(df$Age)  # convert back so DT renders it cleanly
+    if (is_separate_census(df)) {
+      df <- cbind(separate_census_totals(df), Source = df$Source[1])
+    } else {
+      # Sort age groups numerically
+      age_order <- unique(df$Age[order(as.numeric(sub("[-+].*", "", df$Age)))])
+      df$Age <- factor(df$Age, levels = age_order)
+      df <- df[order(df$Age), ]
+      df$Age <- as.character(df$Age)  # convert back so DT renders it cleanly
+    }
 
     DT::datatable(
       df,
@@ -1617,43 +1669,6 @@ server <- function(input, output, session) {
         pageLength = 25,
         scrollX = TRUE,
         order = list()  # ← remove default ordering so our pre-sort is respected
-      ),
-      rownames = FALSE
-    )
-  })
-
-  output$fhirSummaryTable <- renderTable({
-    req(fhirPatientData())
-
-    df <- fhirPatientData()
-
-    df %>%
-      group_by(Gender) %>%
-      summarise(
-        Total_Patients = sum(Count, na.rm = TRUE),
-        Age_Groups = n_distinct(Age),
-        Average_per_Group = round(mean(Count, na.rm = TRUE), 0)
-      ) %>%
-      as.data.frame()
-  })
-
-  output$fhirDataTable <- DT::renderDataTable({
-    req(fhirPatientData())
-
-    df <- fhirPatientData()
-
-    # Sort age groups numerically
-    age_order <- unique(df$Age[order(as.numeric(sub("[-+].*", "", df$Age)))])
-    df$Age <- factor(df$Age, levels = age_order)
-    df <- df[order(df$Age), ]
-    df$Age <- as.character(df$Age)
-
-    DT::datatable(
-      df,
-      options = list(
-        pageLength = 25,
-        scrollX = TRUE,
-        order = list()
       ),
       rownames = FALSE
     )
@@ -1686,40 +1701,8 @@ server <- function(input, output, session) {
   # and maps a numeric age to the correct label.
   # Returns NA if no label can be matched.
   bin_age_to_census_groups <- function(age_numeric, census_age_labels) {
-    # Parse each label into a (low, high) pair
-    # Supported formats:  "0-17"  "18-34"  "65+"  "under 18"  "80 and over"
-    parse_label <- function(lbl) {
-      lbl <- trimws(lbl)
-      # Pattern: "65+" or "65 and over" or "65 and older" → [65, Inf)
-      if (grepl("^(\\d+)\\s*\\+$", lbl) ||
-          grepl("^(\\d+)\\s+and\\s+(over|older|above)", lbl, ignore.case = TRUE) ||
-          grepl("^(\\d+)\\s+or\\s+(over|older|above)", lbl, ignore.case = TRUE)) {
-        lo <- as.numeric(sub("^(\\d+).*", "\\1", lbl))
-        return(c(lo, Inf))
-      }
-      # Pattern: "under 18" or "less than 18" → [0, 17]
-      if (grepl("^under\\s+(\\d+)$", lbl, ignore.case = TRUE) ||
-          grepl("^less\\s+than\\s+(\\d+)$", lbl, ignore.case = TRUE)) {
-        hi <- as.numeric(sub("\\D*(\\d+)$", "\\1", lbl)) - 1
-        print("bin: ", c(0, hi))
-        return(c(0, hi))
-      }
-      # Pattern: "18-34" or "18 to 34" or "18–34"
-      m <- regmatches(lbl, regexpr("^(\\d+)\\s*[-–to]+\\s*(\\d+)$", lbl))
-      if (length(m) == 1) {
-        nums <- as.numeric(regmatches(m, gregexpr("\\d+", m))[[1]])
-        return(c(nums[1], nums[2]))
-      }
-      # Single number label – exact match
-      if (grepl("^\\d+$", lbl)) {
-        n <- as.numeric(lbl)
-        return(c(n, n))
-      }
-      return(c(NA, NA))
-    }
-
     # Build lookup table once
-    bounds <- lapply(census_age_labels, parse_label)
+    bounds <- lapply(census_age_labels, parse_range_label)
 
     # Assign each age
     sapply(age_numeric, function(a) {
@@ -2192,30 +2175,246 @@ server <- function(input, output, session) {
     }
   })
 
-  output$vizSourceSelector <- renderUI({
+  # User-defined aggregates: named list, aggregate name -> paths of member files
+  vizGroups <- reactiveVal(list())
+
+  output$vizGroupMemberSelector <- renderUI({
     files <- uploadedFiles()
+    if (length(files) < 2) {
+      return(p("Upload at least two files to aggregate.", style = "color:#999; font-size:12px;"))
+    }
+    selectizeInput("viz_group_members", "Sources to aggregate:",
+                   choices  = setNames(vapply(files, `[[`, character(1), "path"),
+                                       vapply(files, `[[`, character(1), "name")),
+                   multiple = TRUE,
+                   options  = list(placeholder = "Select two or more"))
+  })
+
+  observeEvent(input$viz_add_group, {
+    name    <- trimws(input$viz_group_name %||% "")
+    members <- input$viz_group_members
+    taken   <- c(vapply(uploadedFiles(), `[[`, character(1), "name"), names(vizGroups()))
+
+    if (!nzchar(name)) {
+      showNotification("Please enter a name for the aggregate.", type = "warning")
+      return()
+    }
+    if (name %in% taken) {
+      showNotification(paste0("A source named '", name, "' already exists."), type = "warning")
+      return()
+    }
+    if (length(members) < 2) {
+      showNotification("Select at least two sources to aggregate.", type = "warning")
+      return()
+    }
+
+    groups <- vizGroups()
+    groups[[name]] <- members
+    vizGroups(groups)
+    updateTextInput(session, "viz_group_name", value = "")
+    updateSelectizeInput(session, "viz_group_members", selected = character(0))
+  })
+
+  observeEvent(input$viz_remove_group, {
+    groups <- vizGroups()
+    groups[[input$viz_remove_group]] <- NULL
+    vizGroups(groups)
+  })
+
+  output$vizGroupList <- renderUI({
+    groups <- vizGroups()
+    if (length(groups) == 0) return(NULL)
+    files      <- uploadedFiles()
+    file_names <- setNames(vapply(files, `[[`, character(1), "name"),
+                           vapply(files, `[[`, character(1), "path"))
+
+    div(style = "margin-top:10px;",
+        lapply(names(groups), function(g) {
+          members <- file_names[intersect(groups[[g]], names(file_names))]
+          div(style = "font-size:12px; margin-bottom:6px;",
+              tags$a(href = "#", title = "Remove aggregate", style = "color:#c00; margin-right:4px;",
+                     onclick = sprintf("Shiny.setInputValue('viz_remove_group', %s, {priority: 'event'}); return false;",
+                                       jsonlite::toJSON(g, auto_unbox = TRUE)),
+                     icon("xmark")),
+              tags$b(g), ": ",
+              if (length(members) > 0) paste(members, collapse = ", ")
+              else tags$span("no member files left", style = "color:#999;"))
+        }))
+  })
+
+  # Choices offered by the previous render of the source selector, so that a
+  # re-render keeps the user's selection and only selects newly added choices
+  vizKnownChoices <- character(0)
+
+  output$vizSourceSelector <- renderUI({
+    files  <- uploadedFiles()
+    groups <- vizGroups()
     if (length(files) == 0) {
       return(p("No files uploaded yet.", style = "color:#999; font-size:12px;"))
     }
 
+    choices <- setNames(vapply(files, `[[`, character(1), "path"),
+                        vapply(files, `[[`, character(1), "name"))
+    group_ids <- character(0)
+    if (length(groups) > 0) {
+      group_ids <- setNames(paste0("group:", names(groups)), paste(names(groups), "(aggregate)"))
+      choices   <- c(choices, group_ids)
+    }
+
+    new_choices <- setdiff(choices, vizKnownChoices)
+    selected    <- union(intersect(isolate(input$viz_selected_sources), choices), new_choices)
+    # A newly added aggregate replaces its members in the selection
+    for (id in intersect(new_choices, group_ids)) {
+      selected <- setdiff(selected, groups[[sub("^group:", "", id)]])
+    }
+    vizKnownChoices <<- unname(choices)
+
     checkboxGroupInput("viz_selected_sources", "Select Sources:",
-                       choices  = setNames(
-                         sapply(files, `[[`, "path"),
-                         sapply(files, `[[`, "name")
-                       ),
-                       selected = sapply(files, `[[`, "path"))
+                       choices  = choices,
+                       selected = selected)
   })
+
+  # ── Bins from the categories of a report ────────────────────────────────────
+  output$vizBinReportSelector <- renderUI({
+    reports <- Filter(function(f) f$type %in% c("csv_json", "census"), uploadedFiles())
+    if (length(reports) == 0) {
+      return(p("Upload a CSV/JSON or census report first.", style = "color:#999; font-size:12px;"))
+    }
+    choices <- setNames(vapply(reports, `[[`, character(1), "path"),
+                        vapply(reports, `[[`, character(1), "name"))
+    kept <- intersect(isolate(input$viz_bin_report), choices)
+    selectInput("viz_bin_report", "Report providing the bins:", choices = choices,
+                selected = if (length(kept) > 0) kept[1] else choices[1])
+  })
+
+  # Category/Count distribution of a CSV/JSON or census file, NULL if it has none
+  loadSourceDistribution <- function(f) {
+    if (f$type == "csv_json") return(loadCsvJsonFile(f))
+    if (f$type == "census") {
+      df <- loadCensusData(f$path)
+      if (is.null(df)) return(NULL)
+      # A separate report contributes its age totals; its gender totals cover
+      # the same people and cannot be added to the same distribution
+      if (is_separate_census(df)) {
+        df <- df[!is.na(df$Age), ]
+        return(data.frame(Category = df$Age, Count = df$Count, stringsAsFactors = FALSE))
+      }
+      return(data.frame(Category = paste(df$Age, df$Gender, sep = " · "), Count = df$Count,
+                        stringsAsFactors = FALSE))
+    }
+    NULL
+  }
+
+  # The bin labels: the categories of the selected report, in its order
+  vizReportBins <- reactive({
+    f <- Find(function(f) f$path == (input$viz_bin_report %||% ""), uploadedFiles())
+    if (is.null(f)) return(NULL)
+    dist <- loadSourceDistribution(f)
+    if (is.null(dist) || nrow(dist) == 0) NULL else unique(dist$Category)
+  })
+
+  # Map values or categories onto the report bins (NA where none fits). A value
+  # matches a bin by name, or when its numeric range lies within the bin's range;
+  # a part after " · " (e.g. gender) must match too unless the bin has none.
+  map_to_report_bins <- function(values, bins) {
+    split_key <- function(x) {
+      k   <- tolower(gsub("\\s*[·|;,]\\s*", " · ", trimws(as.character(x))))
+      pos <- regexpr(" · ", k, fixed = TRUE)
+      list(head = ifelse(pos > 0, substr(k, 1, pos - 1), k),
+           tail = ifelse(pos > 0, substring(k, pos + 3), ""))
+    }
+    b       <- split_key(bins)
+    b_range <- lapply(b$head, parse_range_label)
+
+    uv  <- unique(as.character(values))
+    v   <- split_key(uv)
+    hit <- vapply(seq_along(uv), function(i) {
+      if (is.na(uv[i])) return(NA_character_)
+      # Bins with the same detail first, then coarser bins without one
+      cand <- c(which(b$tail == v$tail[i]), which(b$tail == "" & v$tail[i] != ""))
+      exact <- cand[b$head[cand] == v$head[i]]
+      if (length(exact) > 0) return(bins[exact[1]])
+      r <- parse_range_label(v$head[i])
+      if (anyNA(r)) return(NA_character_)
+      within <- cand[vapply(b_range[cand], function(br) !anyNA(br) && r[1] >= br[1] && r[2] <= br[2],
+                            logical(1))]
+      if (length(within) > 0) bins[within[1]] else NA_character_
+    }, character(1))
+    hit[match(as.character(values), uv)]
+  }
+
+  # Values of the attribute chosen in "FHIR in bins" from one FHIR file, one row
+  # per value; NULL if the file has no such resources
+  fhirAttributeValues <- function(f) {
+    file_data_list <- loadFhirFile(f$path, f$name)
+    if (is.null(file_data_list) || length(file_data_list) == 0) return(NULL)
+
+    matching_datasets <- names(file_data_list)[grepl(
+      paste0("_", input$fhir_resource_to_viz_binning, "$"), names(file_data_list))]
+    if (length(matching_datasets) == 0) return(NULL)
+
+    do.call(rbind, lapply(matching_datasets, function(dn) {
+      d <- file_data_list[[dn]]
+      if (input$fhir_category_col_binning %in% colnames(d)) {
+        data.frame(value = d[[input$fhir_category_col_binning]], n = 1, stringsAsFactors = FALSE)
+      }
+    }))
+  }
+
+  # Sum the bin counts of several vizData() entries into one source
+  aggregateVizSources <- function(name, parts, display_mode, bin_type) {
+    if (length(parts) == 0) return(NULL)
+
+    part_levels <- lapply(parts, function(p) levels(p$data$x_label))
+    all_levels  <- unique(unlist(part_levels))
+    # Minimal x-axis mode gives every source its own census label set: re-sort by age
+    if (bin_type == "census" && !all(vapply(part_levels, identical, logical(1), part_levels[[1]]))) {
+      all_levels <- all_levels[order(as.numeric(sub("[-+].*", "", sub(" · .*", "", all_levels))))]
+    }
+    if (bin_type == "report") all_levels <- intersect(vizReportBins(), all_levels)
+
+    df <- do.call(rbind, lapply(parts, function(p) {
+      data.frame(x_label = as.character(p$data$x_label), Count = p$data$Count,
+                 stringsAsFactors = FALSE)
+    })) %>%
+      group_by(x_label) %>%
+      summarise(Count = sum(Count), .groups = "drop") %>%
+      as.data.frame()
+
+    df$x_label <- factor(df$x_label, levels = all_levels)
+    df <- df[order(df$x_label), ]
+    rownames(df) <- NULL
+    df$y_val <- if (display_mode == "percent") round(df$Count / sum(df$Count) * 100, 2) else df$Count
+
+    list(name    = name,
+         data    = df,
+         total   = sum(vapply(parts, function(p) p$total %||% NA_real_, numeric(1))),
+         members = vapply(parts, `[[`, character(1), "name"))
+  }
 
   vizData <- reactive({
     req(input$viz_selected_sources)
 
     files        <- uploadedFiles()
-    selected     <- Filter(function(f) f$path %in% input$viz_selected_sources, files)
+    groups       <- vizGroups()
+    sel_ids      <- input$viz_selected_sources
+    sel_groups   <- intersect(sub("^group:", "", sel_ids[startsWith(sel_ids, "group:")]), names(groups))
+    # Files needed for the selected sources, including members of selected aggregates
+    needed_paths <- union(sel_ids, unlist(groups[sel_groups]))
+    selected     <- Filter(function(f) f$path %in% needed_paths, files)
     bin_type     <- input$viz_bin_type
     display_mode <- input$viz_display_mode
     combine_gender <- isTRUE(input$viz_combine_gender) && bin_type == "census"
+    fhir_bins_ready <- !is.null(input$fhir_resource_to_viz_binning) &&
+      !is.null(input$fhir_category_col_binning) && nzchar(input$fhir_category_col_binning) &&
+      !is.null(input$fhir_n_bins) && !is.null(input$value_types)
+    fhir_attr_ready <- !is.null(input$fhir_resource_to_viz_binning) &&
+      !is.null(input$fhir_category_col_binning) && nzchar(input$fhir_category_col_binning)
 
+    # Every branch returns list(name, data, total) where total is the number of
+    # records before binning, NULL when nothing fits the bins, or list(error)
     results <- lapply(selected, function(f) {
+      total <- NA_real_
 
       if (bin_type == "census") {
         # Use census Age x Gender bins
@@ -2233,16 +2432,21 @@ server <- function(input, output, session) {
 
         if (is.null(census_ref)) return(NULL)
 
-        census_age_labels    <- unique(census_ref$Age)
-        census_gender_labels <- unique(census_ref$Gender)
-        census_age_labels    <- unique(census_ref$Age)
-        census_gender_labels <- unique(census_ref$Gender)
+        census_age_labels    <- unique(na.omit(census_ref$Age))
+        census_gender_labels <- unique(na.omit(census_ref$Gender))
 
         tryCatch({
           if (f$type == "census") {
             df <- loadCensusData(f$path)
             if (is.null(df)) return(NULL)
+            # A separate report only has age totals for the age groups
+            if (is_separate_census(df)) {
+              if (!combine_gender) return(NULL)
+              df <- df[!is.na(df$Age), ]
+              df$Gender <- "all"
+            }
             df$Source <- f$name
+            total     <- sum(df$Count)
 
             # Calculate percent within this source
             df <- df %>%
@@ -2260,6 +2464,7 @@ server <- function(input, output, session) {
               !is.null(res$resourceType) && res$resourceType == "Patient"
             }, entries)
             if (length(patients) == 0) return(NULL)
+            total <- length(patients)
 
             records <- lapply(patients, function(e) {
               p <- if (!is.null(e$resource)) e$resource else e
@@ -2296,6 +2501,34 @@ server <- function(input, output, session) {
               dplyr::count(Age, Gender, name = "Count") %>%
               mutate(x_label = paste(Age, Gender, sep = " · "))
 
+          } else if (f$type == "csv_json") {
+            # A CSV/JSON distribution keeps its own counts; its categories are
+            # "<age>" or "<age> <sep> <gender>", where age is a census age group
+            # or a plain number of years (binned into the census age groups)
+            dist <- loadCsvJsonFile(f)
+            if (is.null(dist) || nrow(dist) == 0) return(NULL)
+            total <- sum(dist$Count)
+
+            parts   <- strsplit(gsub("\\s*[·|;,]\\s*", " · ", trimws(dist$Category)), " · ", fixed = TRUE)
+            age     <- vapply(parts, function(p) p[1], character(1))
+            gender  <- vapply(parts, function(p) if (length(p) > 1) p[2] else NA_character_, character(1))
+            age_num <- suppressWarnings(as.numeric(age))
+            age     <- ifelse(age %in% census_age_labels, age,
+                              bin_age_to_census_groups(age_num, census_age_labels))
+
+            df <- data.frame(Age    = age,
+                             Gender = map_fhir_gender(gender, census_gender_labels),
+                             Count  = dist$Count,
+                             stringsAsFactors = FALSE)
+            # Without gender the categories only fit when genders are combined
+            df <- df[!is.na(df$Age) & (combine_gender | !is.na(df$Gender)), ]
+            if (nrow(df) == 0) return(NULL)
+
+            df <- df %>%
+              mutate(x_label = if (combine_gender) Age else paste(Age, Gender, sep = " · ")) %>%
+              group_by(x_label) %>%
+              summarise(Count = sum(Count), .groups = "drop")
+
           } else {
             return(NULL)
           }
@@ -2321,8 +2554,8 @@ server <- function(input, output, session) {
 
           # Full label set for uniform x-axis
           all_x_labels <-  if (bin_type == "census") {
-            age_order <- unique(census_ref$Age[order(as.numeric(sub("[-+].*", "", census_ref$Age)))])
-            genders   <- sort(unique(census_ref$Gender))
+            age_order <- census_age_labels[order(as.numeric(sub("[-+].*", "", census_age_labels)))]
+            genders   <- sort(census_gender_labels)
             if (combine_gender) age_order
             else as.vector(t(outer(age_order, genders, paste, sep = " · ")))
           } else {
@@ -2361,42 +2594,81 @@ server <- function(input, output, session) {
             df$x_label <- factor(df$x_label, levels = all_x_labels)
           }
 
-          list(name = f$name, data = df)
+          list(name = f$name, data = df, total = total)
 
         }, error = function(e) {
           warning(paste("vizData error for", f$name, ":", e$message))
-          NULL
+          list(error = e$message)
+        })
+
+      } else if (bin_type == "report") {
+        # Use the categories of the selected report as bins
+        bins <- vizReportBins()
+        if (is.null(bins)) return(NULL)
+        if (f$type == "fhir" && !fhir_attr_ready) return(NULL)
+
+        tryCatch({
+          # One row per value or category; n is how often it occurs
+          all_vals <- if (f$type == "fhir") {
+            fhirAttributeValues(f)
+          } else {
+            dist <- loadSourceDistribution(f)
+            if (is.null(dist)) NULL
+            else data.frame(value = dist$Category, n = dist$Count, stringsAsFactors = FALSE)
+          }
+          if (is.null(all_vals) || nrow(all_vals) == 0) return(NULL)
+          total <- sum(all_vals$n)
+
+          all_vals$bin <- map_to_report_bins(all_vals$value, bins)
+          all_vals     <- all_vals[!is.na(all_vals$bin), ]
+          if (nrow(all_vals) == 0) return(NULL)
+
+          df <- all_vals %>%
+            count(x_label = bin, wt = n, name = "Count") %>%
+            as.data.frame(stringsAsFactors = FALSE)
+          df$y_val <- if (display_mode == "percent") round(df$Count / sum(df$Count) * 100, 2) else df$Count
+
+          # Uniform mode shows every bin, minimal mode only the filled ones
+          labels <- if (input$x_axis_display_mode == "uniform") bins else bins[bins %in% df$x_label]
+          df <- data.frame(x_label = labels, stringsAsFactors = FALSE) %>%
+            left_join(df, by = "x_label") %>%
+            mutate(Count = ifelse(is.na(Count), 0, Count),
+                   y_val = ifelse(is.na(y_val), 0, y_val))
+          df$x_label <- factor(df$x_label, levels = labels)
+
+          list(name = f$name, data = df, total = total)
+
+        }, error = function(e) {
+          warning(paste("vizData report bins error for", f$name, ":", e$message))
+          list(error = e$message)
         })
 
       } else if (bin_type == "fhir_bins") {
         # Use FHIR in bins configuration
-        req(input$fhir_resource_to_viz_binning,
-            input$fhir_category_col_binning,
-            input$fhir_n_bins,
-            input$value_types)
-
-        if (f$type != "fhir") return(NULL)
+        if (!fhir_bins_ready || !f$type %in% c("fhir", "csv_json")) return(NULL)
 
         tryCatch({
-          file_data_list <- loadFhirFile(f$path, f$name)
-          if (is.null(file_data_list) || length(file_data_list) == 0) return(NULL)
-
           selected_resource_type <- input$fhir_resource_to_viz_binning
           selected_attribute     <- input$fhir_category_col_binning
           n_bins                 <- input$fhir_n_bins
           value_type             <- input$value_types
 
-          matching_datasets <- names(file_data_list)[grepl(
-            paste0("_", selected_resource_type, "$"), names(file_data_list))]
-          if (length(matching_datasets) == 0) return(NULL)
-
-          all_vals <- do.call(rbind, lapply(matching_datasets, function(dn) {
-            d <- file_data_list[[dn]]
-            if (selected_attribute %in% colnames(d)) {
-              data.frame(value = d[[selected_attribute]], stringsAsFactors = FALSE)
-            }
-          }))
+          # One row per value; n is how often the value occurs
+          all_vals <- if (f$type == "fhir") {
+            fhirAttributeValues(f)
+          } else {
+            # A CSV/JSON distribution: its categories are binned like the FHIR values
+            dist <- loadCsvJsonFile(f)
+            if (is.null(dist) || nrow(dist) == 0) return(NULL)
+            value <- switch(value_type,
+                            num  = suppressWarnings(as.numeric(dist$Category)),
+                            bool = as.logical(dist$Category),
+                            dist$Category)
+            # Categories that do not parse as the bin type cannot be binned
+            data.frame(value = value, n = dist$Count, stringsAsFactors = FALSE)[!is.na(value), ]
+          }
           if (is.null(all_vals) || nrow(all_vals) == 0) return(NULL)
+          total <- sum(all_vals$n)
 
           # Build bin labels
           truncate_label <- function(x, max_chars = 15) {
@@ -2436,7 +2708,7 @@ server <- function(input, output, session) {
           if (nrow(all_vals) == 0) return(NULL)
 
           df <- all_vals %>%
-            count(bin, name = "Count") %>%
+            count(bin, wt = n, name = "Count") %>%
             mutate(x_label = bin_labels[bin],
                    x_label = factor(x_label, levels = bin_labels))
 
@@ -2487,20 +2759,215 @@ server <- function(input, output, session) {
             df$x_label <- factor(df$x_label, levels = all_x_labels)
           }
 
-          list(name = f$name, data = df)
+          list(name = f$name, data = df, total = total)
 
         }, error = function(e) {
           warning(paste("vizData fhir_bins error for", f$name, ":", e$message))
-          NULL
+          list(error = e$message)
         })
       }
     })
+    names(results) <- vapply(selected, `[[`, character(1), "path")
 
-    Filter(Negate(is.null), results)
+    # Why a file produced nothing: shown to the user in the info box
+    exclusion_reason <- function(f) {
+      res <- results[[f$path]]
+      if (!is.null(res$error)) return(paste("the file could not be read:", res$error))
+      if (bin_type == "census") {
+        if (!f$type %in% c("census", "fhir", "csv_json"))
+          return("this file type cannot be mapped to census bins")
+        if (!any(vapply(files, function(x) x$type == "census", logical(1))))
+          return("no census report is uploaded to provide the bins")
+        if (f$type == "census" && !combine_gender && isTRUE(is_separate_census(loadCensusData(f$path))))
+          return("a separate report has age and gender totals but no age \u00d7 gender counts (tick \"Combine male and female\" to compare its age groups)")
+        if (f$type == "csv_json" && !combine_gender)
+          return("none of its categories match the census age and gender groups (categories without gender need \"Combine male and female\")")
+        "none of its values match the census age and gender groups"
+      } else if (bin_type == "report") {
+        if (is.null(vizReportBins()))
+          return("no report with categories is selected to provide the bins")
+        if (!f$type %in% c("census", "fhir", "csv_json"))
+          return("this file type cannot be mapped to report categories")
+        if (f$type == "fhir" && !fhir_attr_ready)
+          return("choose a resource type and attribute in the \"FHIR in bins\" tab to map its values")
+        "none of its categories match the categories of the selected report"
+      } else {
+        if (!fhir_bins_ready) return("no bins are defined yet in the \"FHIR in bins\" tab")
+        if (!f$type %in% c("fhir", "csv_json")) return("census reports cannot be mapped to FHIR bins")
+        "none of its values fall into the bins defined in the \"FHIR in bins\" tab"
+      }
+    }
+    file_by_path <- setNames(selected, vapply(selected, `[[`, character(1), "path"))
+    ok <- vapply(results, function(r) !is.null(r) && is.null(r$error), logical(1))
+    excluded <- lapply(file_by_path[!ok], function(f) list(name = f$name, reason = exclusion_reason(f)))
+    results  <- results[ok]
+
+    # Keep the order of the source selector; aggregates replace their member ids
+    out <- lapply(sel_ids, function(id) {
+      if (startsWith(id, "group:")) {
+        g <- sub("^group:", "", id)
+        aggregateVizSources(g, results[intersect(groups[[g]], names(results))],
+                            display_mode, bin_type)
+      } else {
+        results[[id]]
+      }
+    })
+    names(out) <- sel_ids
+    # Aggregates whose members were all excluded are reported, too
+    for (id in sel_ids[startsWith(sel_ids, "group:") & vapply(out, is.null, logical(1))]) {
+      excluded[[id]] <- list(name   = sub("^group:", "", id),
+                             reason = "none of its member sources could be mapped to the bins")
+    }
+    # Files pulled in only as aggregate members are named with their aggregate
+    for (path in setdiff(names(excluded), sel_ids)) {
+      in_groups <- sel_groups[vapply(sel_groups, function(g) path %in% groups[[g]], logical(1))]
+      excluded[[path]]$name <- paste0(excluded[[path]]$name, " (member of ",
+                                      paste(in_groups, collapse = ", "), ")")
+    }
+
+    out <- unname(Filter(Negate(is.null), out))
+    attr(out, "excluded") <- unname(excluded)
+    out
   })
 
+  # Sources that are left out entirely, and sources with records outside the bins
+  output$vizInfoBox <- renderUI({
+    req(input$viz_selected_sources)
+    dl       <- vizData()
+    excluded <- attr(dl, "excluded")
+
+    outside <- vizOutsideBins(dl)
+    partial <- Filter(Negate(is.null), lapply(seq_along(dl), function(i) {
+      d <- dl[[i]]
+      if (is.na(outside[i]) || outside[i] < 0.5) return(NULL)
+      sprintf("%s: %s of %s records (%.1f %%) lie outside the bins and are not counted.",
+              d$name, format(outside[i], big.mark = ","), format(d$total, big.mark = ","),
+              outside[i] / d$total * 100)
+    }))
+
+    tagList(
+      if (length(excluded) > 0)
+        div(class = "alert alert-warning", role = "alert",
+            icon("triangle-exclamation"),
+            strong(" Not shown: these sources cannot be mapped to the selected bins."),
+            tags$ul(style = "margin:6px 0 0 0;",
+                    lapply(excluded, function(x) tags$li(strong(x$name), ": ", x$reason)))),
+      if (length(partial) > 0)
+        div(class = "alert alert-info", role = "alert",
+            icon("circle-info"),
+            strong(" Partly mapped:"),
+            tags$ul(style = "margin:6px 0 0 0;", lapply(partial, tags$li)))
+    )
+  })
+
+  # The shown sources in the selected bins as one long table
+  vizExportTable <- reactive({
+    dl <- vizData()
+    req(length(dl) > 0)
+    do.call(rbind, lapply(dl, function(d) {
+      count <- d$data$Count
+      data.frame(
+        source       = d$name,
+        aggregate_of = if (is.null(d$members)) "" else paste(d$members, collapse = "; "),
+        bin          = as.character(d$data$x_label),
+        count        = count,
+        percent      = if (sum(count) > 0) round(count / sum(count) * 100, 2) else 0,
+        stringsAsFactors = FALSE
+      )
+    }))
+  })
+
+  # Records of each shown source that lie outside the bins
+  vizOutsideBins <- function(dl) {
+    setNames(vapply(dl, function(d) {
+      out <- (d$total %||% NA_real_) - sum(d$data$Count, na.rm = TRUE)
+      if (is.na(out)) NA_real_ else max(out, 0)
+    }, numeric(1)), vapply(dl, `[[`, character(1), "name"))
+  }
+
+  vizBinningLabel <- function() {
+    if (input$viz_bin_type == "census") {
+      if (isTRUE(input$viz_combine_gender)) "census age groups" else "census age groups x gender"
+    } else if (input$viz_bin_type == "report") {
+      f <- Find(function(f) f$path == (input$viz_bin_report %||% ""), uploadedFiles())
+      paste0("categories of ", if (is.null(f)) "a report" else f$name)
+    } else {
+      paste0("FHIR bins: ", input$fhir_resource_to_viz_binning, ".", input$fhir_category_col_binning)
+    }
+  }
+
+  output$vizDownloadCsv <- downloadHandler(
+    filename = function() paste0("compare_bins_", Sys.Date(), ".csv"),
+    content  = function(file) {
+      write.csv(vizExportTable(), file, row.names = FALSE, fileEncoding = "UTF-8")
+    }
+  )
+
+  output$vizDownloadJson <- downloadHandler(
+    filename = function() paste0("compare_bins_", Sys.Date(), ".json"),
+    content  = function(file) {
+      tbl     <- vizExportTable()
+      outside <- vizOutsideBins(vizData())
+      sources <- lapply(split(tbl, factor(tbl$source, levels = unique(tbl$source))), function(d) {
+        list(
+          name                 = d$source[1],
+          aggregate_of         = if (nzchar(d$aggregate_of[1])) strsplit(d$aggregate_of[1], "; ", fixed = TRUE)[[1]] else NULL,
+          count_in_bins        = sum(d$count),
+          records_outside_bins = unname(outside[d$source[1]]),
+          bins         = lapply(seq_len(nrow(d)), function(i)
+                           list(bin = d$bin[i], count = d$count[i], percent = d$percent[i]))
+        )
+      })
+      jsonlite::write_json(
+        list(created  = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
+             binning  = vizBinningLabel(),
+             excluded = lapply(attr(vizData(), "excluded"), function(x) list(name = x$name, reason = x$reason)),
+             sources  = unname(sources)),
+        file, auto_unbox = TRUE, pretty = TRUE, null = "null"
+      )
+    }
+  )
+
+  # The shown sources as one FHIR MeasureReport: a group per source (aggregates
+  # included), each stratified by the selected bins
+  output$vizDownloadMeasureReport <- downloadHandler(
+    filename = function() paste0("compare_measurereport_", Sys.Date(), ".json"),
+    content  = function(file) {
+      tbl <- vizExportTable()
+      initial_population <- function(count) {
+        list(list(code  = list(coding = list(list(
+                    system = "http://terminology.hl7.org/CodeSystem/measure-population",
+                    code   = "initial-population"))),
+                  count = count))
+      }
+      groups <- lapply(split(tbl, factor(tbl$source, levels = unique(tbl$source))), function(d) {
+        label <- d$source[1]
+        if (nzchar(d$aggregate_of[1])) label <- paste0(label, " (aggregate of ", d$aggregate_of[1], ")")
+        list(
+          code       = list(text = label),
+          population = initial_population(sum(d$count)),
+          stratifier = list(list(
+            code    = list(list(text = vizBinningLabel())),
+            stratum = lapply(seq_len(nrow(d)), function(i) {
+              list(value = list(text = d$bin[i]), population = initial_population(d$count[i]))
+            })
+          ))
+        )
+      })
+      report <- list(
+        resourceType = "MeasureReport",
+        status       = "complete",
+        type         = "summary",
+        date         = format(Sys.time(), "%Y-%m-%dT%H:%M:%S+00:00", tz = "UTC"),
+        period       = list(start = as.character(Sys.Date()), end = as.character(Sys.Date())),
+        group        = unname(groups)
+      )
+      jsonlite::write_json(report, file, auto_unbox = TRUE, pretty = TRUE, digits = NA)
+    }
+  )
+
   output$vizPlotsUI <- renderUI({
-    req(vizData())
+    req(input$viz_selected_sources)
     dl <- vizData()
     if (length(dl) == 0) return(p("No data to display.", style = "color:#999;"))
 
@@ -2514,7 +2981,7 @@ server <- function(input, output, session) {
   })
 
   observe({
-    req(vizData())
+    req(length(vizData()) > 0)
     dl           <- vizData()
     display_mode <- isolate(input$viz_display_mode)
     y_label      <- if (isolate(input$viz_display_mode) == "percent") "Percentage (%)" else "Count"
@@ -2541,7 +3008,8 @@ server <- function(input, output, session) {
              else scale_fill_manual(values = c(All = "#2a78d6"), guide = "none")} +
             theme_minimal(base_size = 14) +
             labs(
-              title = d$name,
+              title    = d$name,
+              subtitle = if (!is.null(d$members)) paste("Aggregate of:", paste(d$members, collapse = ", ")),
               x     = NULL,
               y     = y_label,
               fill  = "Gender"
@@ -2562,10 +3030,10 @@ server <- function(input, output, session) {
                           "#e87ba4", "#008300", "#4a3aa7", "#e34948")
 
   vizSourceColours <- function(source_names) {
-    all_names <- sapply(uploadedFiles(), `[[`, "name")
+    all_names <- c(sapply(uploadedFiles(), `[[`, "name"), names(vizGroups()))
     idx <- match(source_names, all_names)
     if (length(source_names) > length(viz_source_palette) ||
-        any(is.na(idx)) || max(idx) > length(viz_source_palette)) {
+        any(is.na(idx)) || max(idx, 0) > length(viz_source_palette)) {
       idx <- seq_along(source_names)
     }
     cols <- if (length(source_names) <= length(viz_source_palette)) {
@@ -2587,7 +3055,7 @@ server <- function(input, output, session) {
   })
 
   output$vizOverlayPlot <- renderGirafe({
-    req(vizData())
+    req(length(vizData()) > 0)
     dl         <- vizData()
     style      <- input$viz_overlay_style %||% "lines"
     is_percent <- input$viz_display_mode == "percent"
